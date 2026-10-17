@@ -5,6 +5,7 @@ except Exception:
     sys.modules['av'] = types.ModuleType('av')
 import numpy as np
 import imageio_ffmpeg
+import stickers
 from flask import Flask, request, jsonify, send_file, send_from_directory, abort
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -642,6 +643,33 @@ def run_export(job, P, burn):
     else:
         fc.append("[ac1]alimiter=limit=0.95[aout]")
     vlabel = 'vc'
+    for j, st in enumerate(P.get('stickers') or []):
+        s0 = max(0.0, float(st['start']))
+        e0 = min(total, float(st['end']))
+        if e0 - s0 < 0.2:
+            continue
+        lines = str(st.get('text', '')).split(chr(10))
+        png, iw, ih = stickers.render(lines, st.get('kind', 'name'), st.get('color', '#f59e0b'), H, float(st.get('scale', 1)))
+        pth = os.path.join(tmp, f'stk{j}.png')
+        with open(pth, 'wb') as f:
+            f.write(png)
+        k = add(pth, ['-loop', '1', '-framerate', '30', '-t', f'{total:.3f}'])
+        anim = st.get('anim', 'slide')
+        d = max(0.1, min(2.0, float(st.get('ad', 0.5)), (e0 - s0) / 2))
+        mx, my = round(W * 0.04), round(H * 0.05)
+        pos = st.get('pos', 'bl')
+        x0 = mx if pos[1] == 'l' else (W - iw - mx if pos[1] == 'r' else (W - iw) / 2)
+        y0 = my if pos[0] == 't' else H - ih - my
+        chain = f"[{k}:v]format=rgba"
+        if anim != 'none':
+            chain += f",fade=t=in:st={s0:.3f}:d={d:.3f}:alpha=1,fade=t=out:st={e0 - d:.3f}:d={d:.3f}:alpha=1"
+        fc.append(chain + f"[stk{j}]")
+        xe = f"{x0:.1f}"
+        if anim == 'slide' and pos[1] != 'c':
+            sl = round(W * 0.06) * (-1 if pos[1] == 'l' else 1)
+            xe = f"{x0:.1f}+({sl})*(max(0,1-(t-{s0:.3f})/{d:.3f})+max(0,(t-{e0 - d:.3f})/{d:.3f}))"
+        fc.append(f"[{vlabel}][stk{j}]overlay=x='{xe}':y={y0:.1f}:enable='between(t,{s0:.3f},{e0:.3f})'[vs{j}]")
+        vlabel = f'vs{j}'
     if burn and P.get('subs'):
         with open(os.path.join(tmp, 'sub.srt'), 'w', encoding='utf-8') as f:
             f.write(make_srt(P['subs']))
@@ -653,7 +681,7 @@ def run_export(job, P, burn):
         bs = chr(92)
         fdir = FONTS.replace(bs, '/').replace(':', bs + ':')
         style = bs + ','
-        fc.append(f"[vc]subtitles=sub.srt:fontsdir='{fdir}':original_size={W}x{H}:"
+        fc.append(f"[{vlabel}]subtitles=sub.srt:fontsdir='{fdir}':original_size={W}x{H}:"
                   f"force_style='FontName={fam}{style}Bold={bold}{style}FontSize={fs}{style}Outline=2{style}Shadow=0{style}MarginV={round(H * 0.06)}'[vout]")
         vlabel = 'vout'
     script = os.path.join(tmp, 'graph.txt')
@@ -698,6 +726,16 @@ def exports(name):
     if not re.fullmatch(r'export_[0-9_]+\.mp4', name):
         abort(404)
     return send_from_directory(EXPORTS, name, as_attachment=bool(request.args.get('dl')))
+
+
+@app.route('/api/sticker.png')
+def sticker_png():
+    a = request.args
+    png, w, h = stickers.render(a.get('t', '').split(chr(10)), a.get('k', 'name'), a.get('c', '#f59e0b'),
+                                max(100, min(4320, int(float(a.get('H', 1080))))), float(a.get('s', 1)))
+    r = app.response_class(png, mimetype='image/png')
+    r.headers['Cache-Control'] = 'max-age=3600'
+    return r
 
 
 @app.route('/fonts/<name>')

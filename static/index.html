@@ -53,6 +53,11 @@ header .logo{font-weight:800;color:var(--ac);font-size:15px;margin-right:10px}
 #center{display:flex;flex-direction:column;min-width:0;min-height:0;background:#0b0d11}
 #stage{flex:1;display:flex;align-items:center;justify-content:center;min-height:0;position:relative;padding:10px}
 #frame{position:relative;background:#000;overflow:hidden;box-shadow:0 0 0 1px var(--line);touch-action:none;cursor:move}
+#stkLayer{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+#stkLayer img{position:absolute;display:none}
+.row.srow{height:28px;margin-top:4px}
+.stk{position:absolute;top:0;bottom:0;border-radius:6px;background:#8b5cf6;overflow:hidden;cursor:grab;border:2px solid transparent;user-select:none}
+.stk.sel{border-color:#fff}
 #vwrap{position:absolute;transform-origin:center;pointer-events:none}
 #vid{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
 #roiBox{position:absolute;border:2px dashed #ffd43b;border-radius:50%;display:none;box-shadow:0 0 0 1px #0008}
@@ -76,7 +81,7 @@ header .logo{font-weight:800;color:var(--ac);font-size:15px;margin-right:10px}
 .clip,.atr{position:absolute;top:0;bottom:0;border-radius:6px;overflow:hidden;cursor:grab;user-select:none;border:2px solid transparent}
 .clip{background:var(--clip) center left/auto 100% repeat-x;background-blend-mode:multiply}
 .clip canvas,.atr canvas{position:absolute;left:0;bottom:0;width:100%;height:55%;pointer-events:none;opacity:.85}
-.clip .lb,.atr .lb{position:absolute;left:10px;top:2px;right:10px;font-size:11px;font-weight:600;text-shadow:0 0 3px #000;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
+.stk .lb,.clip .lb,.atr .lb{position:absolute;left:10px;top:2px;right:10px;font-size:11px;font-weight:600;text-shadow:0 0 3px #000;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
 .atr{background:var(--aud)}
 .clip.sel,.atr.sel{border-color:#fff}
 .hl,.hr{position:absolute;top:0;bottom:0;width:9px;background:rgba(255,255,255,.35);cursor:ew-resize;z-index:2}
@@ -120,7 +125,7 @@ header .logo{font-weight:800;color:var(--ac);font-size:15px;margin-right:10px}
 </header>
 
 <aside id="left" class="panel">
-  <div class="tabs"><button data-t="media" class="on">미디어</button><button data-t="subs">자막</button><button data-t="sep">음성 분리</button></div>
+  <div class="tabs"><button data-t="media" class="on">미디어</button><button data-t="subs">자막</button><button data-t="sep">음성 분리</button><button data-t="stk">스티커</button></div>
   <div class="tabbody" id="tab-media">
     <div class="hbtns">
       <button class="pri" id="bAdd">＋ 영상 / 음악 추가</button>
@@ -133,10 +138,11 @@ header .logo{font-weight:800;color:var(--ac);font-size:15px;margin-right:10px}
   </div>
   <div class="tabbody" id="tab-subs" hidden></div>
   <div class="tabbody" id="tab-sep" hidden></div>
+  <div class="tabbody" id="tab-stk" hidden></div>
 </aside>
 
 <section id="center">
-  <div id="stage"><div id="frame"><div id="vwrap"><video id="vid" playsinline preload="auto"></video><div id="roiBox"></div></div><div id="subOv"></div><div id="empty">미디어를 추가하고<br>타임라인에 올려 주세요</div></div></div>
+  <div id="stage"><div id="frame"><div id="vwrap"><video id="vid" playsinline preload="auto"></video><div id="roiBox"></div></div><div id="stkLayer"></div><div id="subOv"></div><div id="empty">미디어를 추가하고<br>타임라인에 올려 주세요</div></div></div>
   <div id="transport">
     <button id="bHome" title="처음으로 (Home)">⏮</button>
     <button id="bFb" title="1프레임 뒤로 (←)">◀|</button>
@@ -185,7 +191,7 @@ function parseT(s){s=String(s).trim().replace(',','.');const p=s.split(':').map(
 let toastT;function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';clearTimeout(toastT);toastT=setTimeout(()=>t.style.display='none',3200)}
 
 /* ================= state ================= */
-function blank(){return{media:[],clips:[],tracks:[],subs:{},settings:{ratio:'orig',short:1080,fit:'contain',origVol:1,syncMs:0,burn:false,subFont:'Pretendard',subSize:3.5,subBold:true,autoSub:true,lang:'',model:'small'}}}
+function blank(){return{media:[],clips:[],tracks:[],stickers:[],subs:{},settings:{ratio:'orig',short:1080,fit:'contain',origVol:1,syncMs:0,burn:false,subFont:'Pretendard',subSize:3.5,subBold:true,autoSub:true,lang:'',model:'small'}}}
 let P=blank();
 let sel=null;            // {type:'clip'|'track', id}
 let selMedia=null, focusArea='tl';
@@ -209,7 +215,7 @@ let saveT;function save(){clearTimeout(saveT);saveT=setTimeout(()=>fetch('/api/p
 const media=id=>P.media.find(m=>m.id===id);
 const clipOf=id=>P.clips.find(c=>c.id===id);
 const trackOf=id=>P.tracks.find(t=>t.id===id);
-function findSel(){return sel&&(sel.type==='clip'?clipOf(sel.id):trackOf(sel.id))}
+function findSel(){return sel&&(sel.type==='clip'?clipOf(sel.id):sel.type==='sticker'?P.stickers.find(x=>x.id===sel.id):trackOf(sel.id))}
 function layout(){let t=0;return P.clips.map(c=>{const len=(c.out-c.in)/c.speed;const o={c,start:t,len,end:t+len};t+=len;return o})}
 const total=()=>LY.length?LY[LY.length-1].end:0;
 function idxAt(t){for(let i=0;i<LY.length;i++)if(t<LY[i].end-1e-9)return i;return LY.length-1}
@@ -330,11 +336,13 @@ function splitAt(t){
 function delSel(){
   if(!sel)return;
   if(sel.type==='clip'){edit(()=>{P.clips=P.clips.filter(c=>c.id!==sel.id);sel=null},null,{struct:1})}
+  else if(sel.type==='sticker'){edit(()=>{P.stickers=P.stickers.filter(c=>c.id!==sel.id);sel=null},null,{struct:1,tabs:1})}
   else{edit(()=>{P.tracks=P.tracks.filter(c=>c.id!==sel.id);sel=null},null,{struct:1})}
 }
 function dupSel(){
   if(!sel)return;
   if(sel.type==='clip'){const i=P.clips.findIndex(c=>c.id===sel.id);edit(()=>{const b=JSON.parse(JSON.stringify(P.clips[i]));b.id=uid();P.clips.splice(i+1,0,b);sel={type:'clip',id:b.id}},null,{struct:1})}
+  else if(sel.type==='sticker'){edit(()=>{const b=JSON.parse(JSON.stringify(stkOf(sel.id)));b.id=uid();const d=b.end-b.start;b.start=b.end;b.end=b.start+d;P.stickers.push(b);sel={type:'sticker',id:b.id}},null,{struct:1,tabs:1})}
   else{edit(()=>{const b=JSON.parse(JSON.stringify(trackOf(sel.id)));b.id=uid();b.start+=b.dur;P.tracks.push(b);sel={type:'track',id:b.id}},null,{struct:1})}
 }
 function moveSel(d){
@@ -430,7 +438,7 @@ function tick(){
       else{seekTo(LY[curIdx+1].start+1e-4)}
     }
   }
-  audioMix();updHead();updTime();
+  audioMix();updStickers();updHead();updTime();
   requestAnimationFrame(tick)
 }
 function audioMix(){
@@ -551,6 +559,12 @@ function renderTimeline(){
     el.append(h('div','lb','🎵 '+(m?m.name:'?')+(t.loop?'  🔁':'')+(t.mute?'  🔇':'')));
     el.append(h('div','hl'),h('div','hr'));ln.append(el);rows.append(r)});
   if(!P.tracks.length){const r=h('div','row arow');const e=h('div','hint','음악/음성 트랙 — 🎵 음악 추가 버튼 또는 오디오 파일의 ＋');e.style.cssText='position:absolute;left:12px;top:10px';r.append(e);rows.append(r)}
+  P.stickers.forEach(st=>{
+    const r=h('div','row srow'),ln=h('div','lane');r.append(ln);
+    const el=h('div','stk'+(sel&&sel.id===st.id?' sel':''));el.dataset.id=st.id;
+    el.style.left=st.start*zoom+'px';el.style.width=Math.max(8,(st.end-st.start)*zoom)+'px';
+    el.append(h('div','lb',(st.kind==='name'?'🏷 ':'❝ ')+st.text.split(NL)[0]));
+    el.append(h('div','hl'),h('div','hr'));ln.append(el);rows.append(r)});
   updHead();
 }
 function tAt(e){return(e.clientX-$('#tlin').getBoundingClientRect().left)/zoom}
@@ -563,8 +577,8 @@ function tAt(e){return(e.clientX-$('#tlin').getBoundingClientRect().left)/zoom}
   tl.addEventListener('pointerdown',e=>{
     if(e.button!==0)return;
     focusArea='tl';
-    const ru=e.target.closest('#ruler'),clipEl=e.target.closest('.clip'),atrEl=e.target.closest('.atr');
-    if(ru||(!clipEl&&!atrEl)){
+    const ru=e.target.closest('#ruler'),clipEl=e.target.closest('.clip'),atrEl=e.target.closest('.atr'),stkEl=e.target.closest('.stk');
+    if(ru||(!clipEl&&!atrEl&&!stkEl)){
       if(!ru){sel=null;buildInspector();renderTimeline()}
       pause();seekTo(Math.max(0,tAt(e)));
       drag={kind:'scrub'};tl.setPointerCapture(e.pointerId);return}
@@ -577,6 +591,12 @@ function tAt(e){return(e.clientX-$('#tlin').getBoundingClientRect().left)/zoom}
       snap();
       drag={kind:'clip',hit,c,i,o,x:e.clientX,in0:c.in,out0:c.out,moved:false,m:media(c.mid)};
       tl.setPointerCapture(e.pointerId);renderTimeline();return}
+    if(stkEl){
+      const st=stkOf(stkEl.dataset.id);
+      sel={type:'sticker',id:st.id};buildInspector();
+      const hit=e.target.classList.contains('hl')?'l':e.target.classList.contains('hr')?'r':'b';
+      snap();drag={kind:'stk',hit,st,x:e.clientX,s0:st.start,e0:st.end};
+      tl.setPointerCapture(e.pointerId);if(!playing)seekTo(clamp(tAt(e),st.start,Math.min(st.end,total())));renderTimeline();if(curTab==='stk')renderStk();return}
     if(atrEl){
       const t=trackOf(atrEl.dataset.id);
       sel={type:'track',id:t.id};buildInspector();
@@ -589,6 +609,12 @@ function tAt(e){return(e.clientX-$('#tlin').getBoundingClientRect().left)/zoom}
     if(!drag)return;
     if(drag.kind==='scrub'){seekTo(Math.max(0,tAt(e)));return}
     const dx=(e.clientX-drag.x)/zoom;
+    if(drag.kind==='stk'){
+      const st=drag.st,rd=v=>Math.round(v*10)/10;
+      if(drag.hit==='b'){st.start=rd(Math.max(0,drag.s0+dx));st.end=rd(st.start+drag.e0-drag.s0)}
+      else if(drag.hit==='l'){st.start=rd(clamp(drag.s0+dx,0,drag.e0-0.5))}
+      else{st.end=rd(Math.max(drag.s0+0.5,drag.e0+dx))}
+      changed({vis:1,drag:1});return}
     if(drag.kind==='clip'){
       const c=drag.c,sp=c.speed,md=drag.m.duration;
       if(drag.hit==='l'){c.in=r2(clamp(drag.in0+dx*sp,0,drag.out0-0.1*sp)*100)/100;changed({vis:1,drag:1});seekTo(drag.o.start)}
@@ -686,6 +712,7 @@ function buildInspector(){
   const it=findSel();
   if(sel&&it&&sel.type==='clip')buildClip(R,it);
   else if(sel&&it&&sel.type==='track')buildTrack(R,it);
+  else if(sel&&it&&sel.type==='sticker')buildSticker(R,it);
   else{const e=card('편집');e.append(h('div','hint','타임라인에서 컷이나 음악을 선택하면 여기에서 편집할 수 있습니다.\n미리보기 화면을 드래그하면 영상 위치가 움직이고, 마우스 휠로 확대/축소됩니다.'));R.append(e)}
   refreshInspector();updRoi();
 }
@@ -843,10 +870,10 @@ function buildTrack(R,t){
 /* ================= tabs: subtitles / separation ================= */
 let curTab='media';
 function setTab(t){curTab=t;$$('.tabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
-  ['media','subs','sep'].forEach(n=>$('#tab-'+n).hidden=n!==t);renderTabs()}
+  ['media','subs','sep','stk'].forEach(n=>$('#tab-'+n).hidden=n!==t);renderTabs()}
 $$('.tabs button').forEach(b=>b.onclick=()=>setTab(b.dataset.t));
 function renderTabs(){
-  if(curTab==='subs')renderSubs();else if(curTab==='sep')renderSep();else renderMedia()
+  if(curTab==='subs')renderSubs();else if(curTab==='sep')renderSep();else if(curTab==='stk')renderStk();else renderMedia()
 }
 const subJobs={};
 function startTranscribe(mid){
@@ -985,7 +1012,7 @@ function openExport(){
   const row=h('div','fr');row.append(go,cl);B.append(pb,msg,row);
   go.onclick=async()=>{
     go.disabled=true;P.settings.burn=burn.checked;
-    const proj={settings:{...P.settings,...outSize()},clips:P.clips,tracks:P.tracks,subs:timelineSubs()};
+    const proj={settings:{...P.settings,...outSize()},clips:P.clips,tracks:P.tracks,stickers:P.stickers,subs:timelineSubs()};
     const j=await(await fetch('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project:proj,burn:burn.checked})})).json();
     const iv=setInterval(async()=>{
       const s=await(await fetch('/api/jobs/'+j.id)).json();
@@ -1046,9 +1073,106 @@ $('#left').addEventListener('pointerdown',()=>focusArea='media');
 $('#right').addEventListener('pointerdown',()=>{});
 new ResizeObserver(()=>{layoutFrame();applyVisual()}).observe($('#stage'));
 
+/* ================= stickers (text cards that slide in/out) ================= */
+const NL=String.fromCharCode(10);
+const stkOf=id=>P.stickers.find(s=>s.id===id);
+const STK_POS=[['bl','왼쪽 아래'],['br','오른쪽 아래'],['tl','왼쪽 위'],['tr','오른쪽 위'],['bc','가운데 아래'],['tc','가운데 위']];
+const STK_COLORS=['#f59e0b','#ef4444','#3b82f6','#10b981','#8b5cf6','#ec4899'];
+function newSticker(kind,start,end){
+  return kind==='name'
+    ?{id:uid(),kind:'name',text:'김정훈 목사'+NL+'반석교회',start,end,pos:'bl',scale:1,color:'#f59e0b',anim:'slide',ad:0.5}
+    :{id:uid(),kind:'verse',text:"'내 몸은 내가 알아'"+NL+'마태복음 3장16~17절',start,end,pos:'tr',scale:1,color:'#f59e0b',anim:'slide',ad:0.5};
+}
+function addSticker(kind){
+  const s=newSticker(kind,14,25);
+  edit(()=>{P.stickers.push(s);sel={type:'sticker',id:s.id}},null,{struct:1,tabs:1});
+  setTab('stk');
+  if(total()>0)seekTo(Math.min(total()-0.01,s.start+1.5));
+}
+function addStickerSet(){
+  const a=newSticker('name',14,25),b=newSticker('verse',14,25);
+  edit(()=>{P.stickers.push(a,b);sel={type:'sticker',id:a.id}},null,{struct:1,tabs:1});
+  if(total()>0)seekTo(Math.min(total()-0.01,15.5));
+  toast('이름표와 말씀 제목 스티커를 14~25초에 넣었습니다. 오른쪽에서 글자를 바꾸세요');
+}
+function renderStk(){
+  const B=$('#tab-stk');B.innerHTML='';
+  const c=card('스티커 (이름표 · 말씀 제목)');
+  c.append(h('div','hint','설교 영상 위에 목사님 이름·교회, 오늘 말씀 제목·성경 구절을 카드로 띄웁니다. 정한 시간 동안 부드럽게 들어왔다가 나갑니다.'));
+  const one=btn('✨ 설교 기본 세트 한 번에 추가 (14~25초)',addStickerSet,'pri');one.style.width='100%';one.style.margin='8px 0 4px';
+  c.append(one);
+  const g=h('div','grp');
+  g.append(btn('🏷 이름표 추가 (왼쪽 아래)',()=>addSticker('name')),btn('❝ 말씀 제목 추가 (오른쪽 위)',()=>addSticker('verse')));
+  c.append(g);B.append(c);
+  const l=card('추가한 스티커');
+  if(!P.stickers.length)l.append(h('div','hint','아직 없습니다.'));
+  P.stickers.forEach(s=>{
+    const r=h('div','mi'+(sel&&sel.id===s.id?' sel':''));
+    const th=h('div','th',s.kind==='name'?'🏷':'❝');
+    const nm=h('div','nm');const b=h('b',null,s.text.split(NL)[0]);nm.append(b,h('small',null,fmt(s.start)+' ~ '+fmt(s.end)));
+    const del=btn('🗑',e=>{e.stopPropagation();sel={type:'sticker',id:s.id};delSel()},'ib dng');
+    r.append(th,nm,del);
+    r.onclick=()=>{sel={type:'sticker',id:s.id};buildInspector();renderTimeline();renderStk();if(total()>0)seekTo(clamp(s.start+1.5,0,total()-0.01))};
+    l.append(r)});
+  B.append(l);
+}
+function buildSticker(R,s){
+  const k=card('스티커 편집');
+  const kg=h('div','grp');
+  [['name','🏷 이름표'],['verse','❝ 말씀 카드']].forEach(([v,l])=>{const b=btn(l,()=>edit(()=>s.kind=v,null,{tabs:1}));reg(()=>b.classList.toggle('on',s.kind===v));kg.append(b)});
+  k.append(frow('모양',kg));
+  const ta=h('textarea');ta.rows=3;ta.style.cssText='width:100%;resize:vertical;font:inherit;background:var(--p1);color:var(--tx);border:1px solid var(--line);border-radius:6px;padding:6px';
+  ta.oninput=()=>edit(()=>s.text=ta.value,'stktext',{tabs:0});
+  reg(()=>{if(document.activeElement!==ta)ta.value=s.text});
+  k.append(frow('글자',ta),h('div','hint','줄바꿈 = 다음 줄 (보통 2줄). 위: 이름/제목, 아래: 교회/성경 구절'));
+  k.append(frow('나오는 시간',...timeField('',()=>s.start,v=>{s.start=r2(Math.max(0,v));if(s.end<s.start+0.5)s.end=r2(s.start+0.5)},'stks')));
+  k.append(frow('사라지는 시간',...timeField('',()=>s.end,v=>{s.end=r2(Math.max(s.start+0.5,v))},'stke')));
+  const tb=h('div','grp');
+  tb.append(btn('시작=재생 막대',()=>edit(()=>{s.start=r2(T);if(s.end<s.start+0.5)s.end=r2(s.start+0.5)},null)),btn('끝=재생 막대',()=>edit(()=>s.end=r2(Math.max(s.start+0.5,T)),null)));
+  k.append(frow('',tb));
+  const ps=h('select');STK_POS.forEach(([v,l])=>{const o=h('option',null,l);o.value=v;ps.append(o)});
+  ps.onchange=()=>edit(()=>s.pos=ps.value,null);reg(()=>ps.value=s.pos);
+  k.append(frow('위치',ps));
+  k.append(slider('크기',()=>s.scale*100,v=>s.scale=r2(v)/100,{min:50,max:200,step:1,unit:'%'}));
+  const cg=h('div','grp');
+  STK_COLORS.forEach(c=>{const b=btn('',()=>edit(()=>s.color=c,null));b.style.cssText='width:26px;height:26px;padding:0;background:'+c;reg(()=>b.style.outline=s.color===c?'2px solid #fff':'none');cg.append(b)});
+  const ci=h('input');ci.type='color';ci.style.cssText='width:34px;height:28px;padding:0';ci.oninput=()=>edit(()=>s.color=ci.value,'stkcolor');reg(()=>{if(document.activeElement!==ci)ci.value=s.color});cg.append(ci);
+  k.append(frow('포인트 색',cg));
+  const an=h('select');[['slide','옆에서 밀려 들어오기 + 페이드'],['fade','페이드 인/아웃'],['none','애니메이션 없음']].forEach(([v,l])=>{const o=h('option',null,l);o.value=v;an.append(o)});
+  an.onchange=()=>edit(()=>s.anim=an.value,null);reg(()=>an.value=s.anim);
+  k.append(frow('등장 효과',an));
+  const ad=h('input','num');ad.type='number';ad.step=.1;ad.min=.1;ad.max=2;ad.onchange=()=>edit(()=>s.ad=clamp(+ad.value||.5,.1,2),'stkad');reg(()=>{if(document.activeElement!==ad)ad.value=s.ad});
+  k.append(frow('효과 시간',ad,h('span','hint','초')));
+  k.append(frow('',btn('⧉ 복제',dupSel),btn('🗑 삭제',delSel,'dng')));
+  R.append(k);
+}
+const stkImgs={};
+function updStickers(){
+  const layer=$('#stkLayer');if(!layer)return;
+  const {W,H}=outSize(),live=new Set();
+  for(const s of P.stickers){
+    live.add(s.id);
+    let o=stkImgs[s.id];
+    if(!o){o={img:new Image(),key:'',ok:false};o.img.onload=()=>{o.ok=true};layer.append(o.img);stkImgs[s.id]=o}
+    const key=[s.text,s.kind,s.color,s.scale,H].join('|');
+    if(o.key!==key){o.key=key;o.ok=false;o.img.src='/api/sticker.png?'+new URLSearchParams({t:s.text,k:s.kind,c:s.color,s:s.scale,H:H})}
+    const img=o.img,on=T>=s.start&&T<s.end;
+    if(!on||!o.ok||!img.naturalWidth){img.style.display='none';continue}
+    const iw=img.naturalWidth,ih=img.naturalHeight,mx=W*0.04,my=H*0.05;
+    const x0=s.pos[1]==='l'?mx:s.pos[1]==='r'?W-iw-mx:(W-iw)/2,y0=s.pos[0]==='t'?my:H-ih-my;
+    const d=Math.max(0.1,Math.min(2,s.ad||.5,(s.end-s.start)/2));
+    let a=1,off=0;
+    if(s.anim!=='none')a=Math.min(1,(T-s.start)/d,(s.end-T)/d);
+    if(s.anim==='slide'&&s.pos[1]!=='c'){const p=Math.max(0,1-(T-s.start)/d)+Math.max(0,(T-(s.end-d))/d);off=W*0.06*p*(s.pos[1]==='l'?-1:1)}
+    img.style.display='block';img.style.opacity=Math.max(0,a);
+    img.style.left=((x0+off)/W*100)+'%';img.style.top=(y0/H*100)+'%';img.style.width=(iw/W*100)+'%';
+  }
+  for(const id in stkImgs)if(!live.has(id)){stkImgs[id].img.remove();delete stkImgs[id]}
+}
+
 /* ================= boot ================= */
 (async function(){
-  try{const d=await(await fetch('/api/project')).json();if(d){P=Object.assign(blank(),d);P.settings=Object.assign(blank().settings,d.settings||{})}}catch(e){}
+  try{const d=await(await fetch('/api/project')).json();if(d){P=Object.assign(blank(),d);P.stickers=P.stickers||[];P.settings=Object.assign(blank().settings,d.settings||{})}}catch(e){}
   P.clips.forEach(c=>{if(!c.sep)c.sep={mode:'orig',v:1,m:1}});
   selMedia=P.media.length?P.media[0].id:null;
   LY=layout();renderMedia();buildInspector();renderTimeline();layoutFrame();seekTo(0);updUndo();
