@@ -13,6 +13,8 @@ MEDIA = os.path.join(DATA, 'media')
 CACHE = os.path.join(DATA, 'cache')
 EXPORTS = os.path.join(DATA, 'exports')
 SUBS = os.path.join(DATA, 'subs')
+FONTS = os.path.join(BASE, 'fonts')
+FONT_FAMILIES = {'Pretendard', 'NanumGothic', 'NanumMyeongjo', 'Gowun Batang'}
 for d in (MEDIA, CACHE, EXPORTS, SUBS, os.path.join(CACHE, 'sep')):
     os.makedirs(d, exist_ok=True)
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
@@ -515,9 +517,16 @@ def run_export(job, P, burn):
     if burn and P.get('subs'):
         with open(os.path.join(tmp, 'sub.srt'), 'w', encoding='utf-8') as f:
             f.write(make_srt(P['subs']))
-        fs = round(H * 0.035)
-        fc.append(f"[vc]subtitles=sub.srt:fontsdir='C\\:/Windows/Fonts':original_size={W}x{H}:"
-                  f"force_style='FontName=Malgun Gothic\\,FontSize={fs}\\,Outline=2\\,Shadow=0\\,MarginV={round(H * 0.06)}'[vout]")
+        fam = S.get('subFont') or 'Pretendard'
+        if fam not in FONT_FAMILIES:
+            fam = 'Pretendard'
+        fs = round(H * max(1.5, min(12.0, float(S.get('subSize', 3.5)))) / 100)
+        bold = 1 if S.get('subBold', True) else 0
+        bs = chr(92)
+        fdir = FONTS.replace(bs, '/').replace(':', bs + ':')
+        style = bs + ','
+        fc.append(f"[vc]subtitles=sub.srt:fontsdir='{fdir}':original_size={W}x{H}:"
+                  f"force_style='FontName={fam}{style}Bold={bold}{style}FontSize={fs}{style}Outline=2{style}Shadow=0{style}MarginV={round(H * 0.06)}'[vout]")
         vlabel = 'vout'
     script = os.path.join(tmp, 'graph.txt')
     with open(script, 'w', encoding='utf-8') as f:
@@ -561,6 +570,11 @@ def exports(name):
     if not re.fullmatch(r'export_[0-9_]+\.mp4', name):
         abort(404)
     return send_from_directory(EXPORTS, name, as_attachment=bool(request.args.get('dl')))
+
+
+@app.route('/fonts/<name>')
+def fonts(name):
+    return send_from_directory(FONTS, name)
 
 
 @app.route('/api/srt', methods=['POST'])

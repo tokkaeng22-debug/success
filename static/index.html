@@ -5,6 +5,14 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>로컬 영상 편집기</title>
 <style>
+@font-face{font-family:"Pretendard";src:url(/fonts/Pretendard-Regular.otf);font-weight:400}
+@font-face{font-family:"Pretendard";src:url(/fonts/Pretendard-Bold.otf);font-weight:700}
+@font-face{font-family:"NanumGothic";src:url(/fonts/NanumGothic-Regular.ttf);font-weight:400}
+@font-face{font-family:"NanumGothic";src:url(/fonts/NanumGothic-Bold.ttf);font-weight:700}
+@font-face{font-family:"NanumMyeongjo";src:url(/fonts/NanumMyeongjo-Regular.ttf);font-weight:400}
+@font-face{font-family:"NanumMyeongjo";src:url(/fonts/NanumMyeongjo-Bold.ttf);font-weight:700}
+@font-face{font-family:"Gowun Batang";src:url(/fonts/GowunBatang-Regular.ttf);font-weight:400}
+@font-face{font-family:"Gowun Batang";src:url(/fonts/GowunBatang-Bold.ttf);font-weight:700}
 :root{--bg:#0f1115;--p1:#171a21;--p2:#1e222b;--p3:#272c37;--line:#2e3441;--tx:#e8ebf2;--dim:#8a93a6;--ac:#22d3ee;--ac2:#0ea5b7;--danger:#f87171;--ok:#4ade80;--clip:#3b5bdb;--aud:#2f9e6e}
 *{box-sizing:border-box}
 html,body{height:100%;margin:0;background:var(--bg);color:var(--tx);font:13px/1.4 "Malgun Gothic","Segoe UI",system-ui,sans-serif;overflow:hidden}
@@ -46,7 +54,7 @@ header .logo{font-weight:800;color:var(--ac);font-size:15px;margin-right:10px}
 #stage{flex:1;display:flex;align-items:center;justify-content:center;min-height:0;position:relative;padding:10px}
 #frame{position:relative;background:#000;overflow:hidden;box-shadow:0 0 0 1px var(--line);touch-action:none;cursor:move}
 #vid{position:absolute;transform-origin:center;pointer-events:none;max-width:none;display:block}
-#subOv{position:absolute;left:5%;right:5%;bottom:6%;text-align:center;color:#fff;font-weight:700;text-shadow:0 0 4px #000,0 0 4px #000,0 0 3px #000;pointer-events:none;white-space:pre-wrap}
+#subOv{position:absolute;left:5%;right:5%;bottom:6%;text-align:center;color:#fff;line-height:1.25;text-shadow:0 0 4px #000,0 0 4px #000,0 0 3px #000;pointer-events:none;white-space:pre-wrap}
 #empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--dim);text-align:center;pointer-events:none}
 #transport{display:flex;align-items:center;justify-content:center;gap:8px;padding:6px;border-top:1px solid var(--line);background:var(--p1)}
 #transport .tm{font-variant-numeric:tabular-nums;min-width:150px;text-align:center;color:var(--ac)}
@@ -174,7 +182,7 @@ function parseT(s){s=String(s).trim().replace(',','.');const p=s.split(':').map(
 let toastT;function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';clearTimeout(toastT);toastT=setTimeout(()=>t.style.display='none',3200)}
 
 /* ================= state ================= */
-function blank(){return{media:[],clips:[],tracks:[],subs:{},settings:{ratio:'orig',short:1080,fit:'contain',origVol:1,syncMs:0,burn:false,autoSub:true,lang:'',model:'small'}}}
+function blank(){return{media:[],clips:[],tracks:[],subs:{},settings:{ratio:'orig',short:1080,fit:'contain',origVol:1,syncMs:0,burn:false,subFont:'Pretendard',subSize:3.5,subBold:true,autoSub:true,lang:'',model:'small'}}}
 let P=blank();
 let sel=null;            // {type:'clip'|'track', id}
 let selMedia=null, focusArea='tl';
@@ -357,7 +365,7 @@ function layoutFrame(){
   const {W,H}=outSize(),st=$('#stage'),aw=st.clientWidth-20,ah=st.clientHeight-20;
   const k=Math.max(0.05,Math.min(aw/W,ah/H));
   frame.style.width=W*k+'px';frame.style.height=H*k+'px';
-  frame.style.fontSize=Math.max(10,H*k*0.045)+'px';
+  frame.style.fontSize=Math.max(6,H*k*P.settings.subSize/100)+'px';const so=$('#subOv');so.style.fontFamily=`"${P.settings.subFont}",sans-serif`;so.style.fontWeight=P.settings.subBold?700:400;
   $('#outsz').textContent=`출력 ${W} × ${H} px`;
 }
 function applyVisual(){
@@ -792,6 +800,21 @@ function renderSubs(){
   const auto=h('input');auto.type='checkbox';auto.checked=P.settings.autoSub;auto.onchange=()=>{P.settings.autoSub=auto.checked;save()};
   const al=h('label');al.append(auto,' 파일을 가져오면 자동으로 자막 생성');
   c.append(frow('언어',lang),frow('정확도',mod),al);
+  const st=card('자막 글꼴 · 크기 (모두 상업용 무료, OFL)');
+  const ff=h('select');[['Pretendard','프리텐다드 — 깔끔한 고딕 (추천)'],['NanumGothic','나눔고딕 — 가독성 좋은 고딕'],['NanumMyeongjo','나눔명조 — 단정한 명조 (설교/성경 구절)'],['Gowun Batang','고운바탕 — 부드러운 바탕체']].forEach(([v,l])=>{const o=h('option',null,l);o.value=v;ff.append(o)});
+  ff.value=P.settings.subFont;ff.onchange=()=>{P.settings.subFont=ff.value;save();layoutFrame()};ff.style.maxWidth='210px';
+  st.append(frow('글꼴',ff));
+  const sr=h('input');sr.type='range';sr.min=1.5;sr.max=8;sr.step=0.1;sr.value=P.settings.subSize;
+  const sn=h('input','num');sn.type='number';sn.min=1.5;sn.max=12;sn.step=0.1;sn.value=P.settings.subSize;
+  const setSz=v=>{P.settings.subSize=clamp(Math.round(v*10)/10,1.5,12);sr.value=P.settings.subSize;sn.value=P.settings.subSize;save();layoutFrame()};
+  sr.oninput=()=>setSz(+sr.value);sn.onchange=()=>setSz(+sn.value||3.5);
+  st.append(frow('크기',sr,sn,h('span','hint','%')));
+  const sb=h('div','grp');sb.append(btn('− 작게',()=>setSz(P.settings.subSize-0.3)),btn('＋ 크게',()=>setSz(P.settings.subSize+0.3)),btn('기본(3.5)',()=>setSz(3.5)));
+  st.append(frow('',sb));
+  const bd=h('input');bd.type='checkbox';bd.checked=P.settings.subBold;bd.onchange=()=>{P.settings.subBold=bd.checked;save();layoutFrame()};
+  const bdl=h('label');bdl.append(bd,' 굵게');st.append(bdl);
+  st.append(h('div','hint','크기는 화면 높이 대비 %입니다. 미리보기와 내보내기에 같이 적용됩니다. 유튜브 가로 영상은 3~4%, 세로 영상은 4~5%를 권장합니다.'));
+  B.append(st);
   const burn=h('input');burn.type='checkbox';burn.checked=P.settings.burn;burn.onchange=()=>{P.settings.burn=burn.checked;save()};
   const bl=h('label');bl.append(burn,' 내보내기 시 영상에 자막 입히기');c.append(h('div'),bl);
   B.append(c);
