@@ -53,7 +53,10 @@ header .logo{font-weight:800;color:var(--ac);font-size:15px;margin-right:10px}
 #center{display:flex;flex-direction:column;min-width:0;min-height:0;background:#0b0d11}
 #stage{flex:1;display:flex;align-items:center;justify-content:center;min-height:0;position:relative;padding:10px}
 #frame{position:relative;background:#000;overflow:hidden;box-shadow:0 0 0 1px var(--line);touch-action:none;cursor:move}
-#vid{position:absolute;transform-origin:center;pointer-events:none;max-width:none;display:block}
+#vwrap{position:absolute;transform-origin:center;pointer-events:none}
+#vid{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
+#roiBox{position:absolute;border:2px dashed #ffd43b;border-radius:50%;display:none;box-shadow:0 0 0 1px #0008}
+#bpImg{width:100%;border-radius:6px;background:#000;min-height:30px}
 #subOv{position:absolute;left:5%;right:5%;bottom:6%;text-align:center;color:#fff;line-height:1.25;text-shadow:0 0 4px #000,0 0 4px #000,0 0 3px #000;pointer-events:none;white-space:pre-wrap}
 #empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--dim);text-align:center;pointer-events:none}
 #transport{display:flex;align-items:center;justify-content:center;gap:8px;padding:6px;border-top:1px solid var(--line);background:var(--p1)}
@@ -133,7 +136,7 @@ header .logo{font-weight:800;color:var(--ac);font-size:15px;margin-right:10px}
 </aside>
 
 <section id="center">
-  <div id="stage"><div id="frame"><video id="vid" playsinline preload="auto"></video><div id="subOv"></div><div id="empty">미디어를 추가하고<br>타임라인에 올려 주세요</div></div></div>
+  <div id="stage"><div id="frame"><div id="vwrap"><video id="vid" playsinline preload="auto"></video><div id="roiBox"></div></div><div id="subOv"></div><div id="empty">미디어를 추가하고<br>타임라인에 올려 주세요</div></div></div>
   <div id="transport">
     <button id="bHome" title="처음으로 (Home)">⏮</button>
     <button id="bFb" title="1프레임 뒤로 (←)">◀|</button>
@@ -370,12 +373,13 @@ function layoutFrame(){
 }
 function applyVisual(){
   const o=LY[curIdx];$('#empty').style.display=o?'none':'flex';
-  vid.style.display=o?'block':'none';
+  $('#vwrap').style.display=o?'block':'none';
   if(!o)return;
   const c=o.c,g=geom(c);
-  vid.style.width=(g.sw*g.k*c.scale/g.W*100)+'%';vid.style.height=(g.sh*g.k*c.scale/g.H*100)+'%';
-  vid.style.left=(g.cx/g.W*100)+'%';vid.style.top=(g.cy/g.H*100)+'%';
-  vid.style.transform=`translate(-50%,-50%) rotate(${c.rot}deg) scaleX(${c.flip?-1:1})`;
+  const vw=$('#vwrap');vw.style.width=(g.sw*g.k*c.scale/g.W*100)+'%';vw.style.height=(g.sh*g.k*c.scale/g.H*100)+'%';
+  vw.style.left=(g.cx/g.W*100)+'%';vw.style.top=(g.cy/g.H*100)+'%';
+  updRoi();
+  vw.style.transform=`translate(-50%,-50%) rotate(${c.rot}deg) scaleX(${c.flip?-1:1})`;
 }
 function sepKey(c){return c.sep&&c.sep.mode!=='orig'}
 function setSepSrc(c){
@@ -683,7 +687,7 @@ function buildInspector(){
   if(sel&&it&&sel.type==='clip')buildClip(R,it);
   else if(sel&&it&&sel.type==='track')buildTrack(R,it);
   else{const e=card('편집');e.append(h('div','hint','타임라인에서 컷이나 음악을 선택하면 여기에서 편집할 수 있습니다.\n미리보기 화면을 드래그하면 영상 위치가 움직이고, 마우스 휠로 확대/축소됩니다.'));R.append(e)}
-  refreshInspector();
+  refreshInspector();updRoi();
 }
 function buildClip(R,c){
   const m=media(c.mid);const sp=()=>c.speed;
@@ -720,6 +724,8 @@ function buildClip(R,c){
   k.append(frow('',btn('모든 컷에 같은 크기/위치 적용',()=>edit(()=>P.clips.forEach(x=>{x.scale=c.scale;x.x=c.x;x.y=c.y;x.rot=c.rot;x.flip=c.flip}),null,{vis:0}))));
   R.append(k);
 
+  if(m&&m.hasVideo)buildBeauty(R,c);
+
   k=card('소리 · 이 컷');
   k.append(slider('음량',()=>c.vol*100,v=>c.vol=r2(v)/100,{min:0,max:200,step:1,unit:'%'}));
   const mu=btn('🔇 음소거',()=>edit(()=>c.mute=!c.mute,null));reg(()=>mu.classList.toggle('on',!!c.mute));
@@ -738,6 +744,73 @@ function buildClip(R,c){
   k.append(h('div','hint','목소리/배경음 소스는 [음성 분리] 탭에서 먼저 분리해야 사용할 수 있습니다.'));
   R.append(k);
 }
+
+/* ================= skin beauty ================= */
+const BDEF={on:false,white:60,smooth:40,wrinkle:30,contour:40,roi:null,showRoi:true};
+function bty(c){if(!c.beauty)c.beauty=JSON.parse(JSON.stringify(BDEF));return c.beauty}
+function updRoi(){
+  const box=$('#roiBox');if(!box)return;
+  const c=sel&&sel.type==='clip'&&clipOf(sel.id),o=LY[curIdx];
+  const b=c&&c.beauty;
+  if(!c||!o||o.c.id!==c.id||!b||!b.on||!b.showRoi||!b.roi){box.style.display='none';return}
+  const r=b.roi;box.style.display='block';
+  box.style.left=((r.cx-r.rx)*100)+'%';box.style.top=((r.cy-r.ry)*100)+'%';box.style.width=(r.rx*200)+'%';box.style.height=(r.ry*200)+'%';
+}
+let bpT=0,bpAbort=null;
+function scheduleBeautyPreview(c){
+  clearTimeout(bpT);bpT=setTimeout(()=>beautyPreview(c),500);updRoi()
+}
+async function beautyPreview(c){
+  const img=$('#bpImg');if(!img||!c||!c.beauty.on)return;
+  if(bpAbort)bpAbort.abort();bpAbort=new AbortController();
+  const o=LY.find(x=>x.c.id===c.id);
+  const t=o&&T>=o.start&&T<o.end?c.in+(T-o.start)*c.speed:c.in+Math.min(0.5,(c.out-c.in)/2);
+  img.style.opacity=.5;
+  try{
+    const r=await fetch('/api/beauty_preview',{method:'POST',headers:{'Content-Type':'application/json'},signal:bpAbort.signal,body:JSON.stringify({mediaId:c.mid,t,beauty:c.beauty})});
+    if(!r.ok)throw new Error('preview');
+    const bl=await r.blob();const old=img.src;img.src=URL.createObjectURL(bl);if(old.startsWith('blob:'))URL.revokeObjectURL(old);img.style.opacity=1;
+  }catch(e){if(e.name!=='AbortError'){img.style.opacity=1}}
+}
+async function detectFace(c,quiet){
+  const t=addTask('얼굴 찾는 중');t.set(0.3,'얼굴 찾는 중');
+  try{
+    const r=await(await fetch('/api/face',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mediaId:c.mid,t0:c.in,t1:c.out})})).json();
+    t.done();
+    if(r.found){edit(()=>{bty(c).roi=r.roi},null,{});buildInspector();toast('얼굴을 찾았습니다. 노란 점선 영역에만 보정이 적용됩니다');scheduleBeautyPreview(c)}
+    else{if(!bty(c).roi)edit(()=>{bty(c).roi={cx:.5,cy:.42,rx:.25,ry:.35}},null,{});buildInspector();toast('얼굴을 찾지 못했습니다. 영역을 직접 맞춰 주세요');scheduleBeautyPreview(c)}
+  }catch(e){t.done();toast('얼굴 찾기 실패')}
+}
+function buildBeauty(R,c){
+  const k=card('피부 보정 (미백 · 잡티 · 주름 · 얼굴선)');
+  const b=()=>bty(c);
+  const on=btn('',()=>{
+    const wasOff=!b().on;edit(()=>{b().on=!b().on},null,{struct:1});
+    if(wasOff&&!b().roi)detectFace(c);else scheduleBeautyPreview(c)});
+  reg(()=>{on.textContent=b().on?'✔ 피부 보정 켜짐':'피부 보정 켜기';on.classList.toggle('on',!!b().on)});
+  k.append(frow('',on));
+  const pr=h('div','grp');
+  [['목사님 추천',{white:70,smooth:45,wrinkle:35,contour:40}],['자연스럽게',{white:35,smooth:25,wrinkle:15,contour:30}],['강하게',{white:90,smooth:70,wrinkle:60,contour:60}]].forEach(([l,v])=>
+    pr.append(btn(l,()=>{edit(()=>Object.assign(b(),v,{on:true}),null,{struct:1});if(!b().roi)detectFace(c);else scheduleBeautyPreview(c)})));
+  k.append(frow('프리셋',pr));
+  const sl=(label,key,tip)=>{const e=slider(label,()=>b()[key],v=>{b()[key]=Math.round(v);scheduleBeautyPreview(c)},{min:0,max:100,step:1});e.title=tip;return e};
+  k.append(sl('피부 밝게','white','피부톤을 밝고 화사하게 (어두운 얼굴에 효과)'),sl('잡티 제거','smooth','점·잡티·거친 피부를 매끄럽게'),sl('주름 제거','wrinkle','잔주름·팔자주름을 옅게'),sl('얼굴선 부드럽게','contour','피부 영역 경계를 부드럽게 섞어 자연스럽게'));
+  k.append(h('div','hint','보정은 피부색으로 인식된 부분 + 아래 얼굴 영역 안에서만 적용됩니다 (눈·입술·머리카락·배경은 보호).'));
+  const fb=h('div','grp');fb.append(btn('🔍 얼굴 자동 찾기',()=>detectFace(c)));
+  const sr=h('input');sr.type='checkbox';sr.onchange=()=>{b().showRoi=sr.checked;updRoi();save()};reg(()=>sr.checked=b().showRoi!==false);
+  const srl=h('label');srl.append(sr,' 영역 표시');fb.append(srl);
+  k.append(frow('얼굴 영역',fb));
+  const roiS=(label,key,min,max)=>slider(label,()=>(b().roi||{cx:.5,cy:.42,rx:.25,ry:.35})[key]*100,v=>{if(!b().roi)b().roi={cx:.5,cy:.42,rx:.25,ry:.35};b().roi[key]=v/100;scheduleBeautyPreview(c)},{min:min,max:max,step:1,unit:'%'});
+  k.append(roiS('중심 X','cx',0,100),roiS('중심 Y','cy',0,100),roiS('가로 크기','rx',5,50),roiS('세로 크기','ry',5,50));
+  const pv=h('div');pv.append(h('div','hint','미리보기 (왼쪽 원본 / 오른쪽 보정 후) — 재생 막대 위치 기준'));
+  const img=h('img');img.id='bpImg';pv.append(img);
+  const rb=h('div','grp');rb.append(btn('↻ 미리보기 새로고침',()=>beautyPreview(c)),btn('모든 컷에 적용',()=>edit(()=>P.clips.forEach(x=>{if(x.id!==c.id&&media(x.mid).hasVideo)x.beauty=JSON.parse(JSON.stringify({...b(),roi:x.mid===c.mid?b().roi:null}))}),null,{struct:1})));
+  pv.append(rb);k.append(pv);
+  k.append(h('div','hint','⚠ 보정 영상 내보내기는 시간이 더 걸립니다. 다른 사람이 같이 나오면 영역을 설교자 얼굴에 맞춰 주세요.'));
+  R.append(k);
+  if(b().on)setTimeout(()=>beautyPreview(c),50);
+}
+
 async function setSepMode(c,v){
   if(v!=='orig'){
     const m=media(c.mid);await refreshSep(m.id);

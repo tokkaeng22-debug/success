@@ -384,6 +384,129 @@ def separate():
     return jsonify(j)
 
 
+# ---------------------------------------------------------------- skin beauty (ffmpeg filters, local)
+def _f(b, k, d=0.0):
+    try:
+        return max(0.0, min(100.0, float(b.get(k, d)))) / 100.0
+    except (TypeError, ValueError):
+        return d
+
+
+def beauty_active(b):
+    return bool(b) and b.get('on') and any(_f(b, k) > 0 for k in ('white', 'smooth', 'wrinkle'))
+
+
+def beauty_filters(tag, src, dst, b, sw, sh, dur):
+    """Skin-only retouch: skin mask (YCbCr range * face ellipse, feathered) + maskedmerge of
+    smoothing / wrinkle blur / brightening. Returns filter chains turning [src] into [dst]."""
+    sw, sh = int(sw) // 2 * 2, int(sh) // 2 * 2
+    white, smooth, wr, ct = _f(b, 'white'), _f(b, 'smooth'), _f(b, 'wrinkle'), _f(b, 'contour', 0.3)
+    roi = b.get('roi') or {}
+    cx, cy = float(roi.get('cx', 0.5)), float(roi.get('cy', 0.42))
+    rx, ry = max(0.03, float(roi.get('rx', 0.45))), max(0.03, float(roi.get('ry', 0.6)))
+    R = []
+    R.append(f"[{src}]format=yuv444p,split=2[{tag}0][{tag}s]")
+    R.append(f"[{tag}s]extractplanes=y+u+v[{tag}y][{tag}u][{tag}v]")
+    R.append(f"[{tag}y]lut=y='gte(val,40)*lte(val,250)*255'[{tag}ym]")
+    R.append(f"[{tag}u]lut=y='gte(val,77)*lte(val,127)*255'[{tag}um]")
+    R.append(f"[{tag}v]lut=y='gte(val,133)*lte(val,173)*255'[{tag}vm]")
+    R.append(f"[{tag}um][{tag}vm]blend=all_mode=darken[{tag}uv]")
+    R.append(f"[{tag}uv][{tag}ym]blend=all_mode=darken[{tag}sk]")
+    R.append(f"color=c=black:s=160x90:r=30:d={max(dur, 0.1):.3f},format=gray,"
+             f"geq=lum='255*lte(pow((X/W-{cx:.4f})/{rx:.4f},2)+pow((Y/H-{cy:.4f})/{ry:.4f},2),1)',"
+             f"scale={sw}:{sh}:flags=bicubic,gblur=sigma={max(2.0, sh * 0.02):.1f},format=gray[{tag}roi]")
+    feather = max(1.5, (3 + ct * 18) * sh / 1080)
+    R.append(f"[{tag}sk][{tag}roi]blend=all_mode=darken,gblur=sigma={feather:.2f},format=gray[{tag}mk]")
+    stages = []
+    if smooth > 0:
+        stages.append(('sm', f"yaepblur=radius={2 + round(smooth * 3)}:sigma={int(20 + smooth * 180)}", 0.35 + 0.65 * smooth))
+    if wr > 0:
+        stages.append(('wr', f"yaepblur=radius={4 + round(wr * 6)}:sigma={int(60 + wr * 400)}", 0.25 + 0.7 * wr))
+    if white > 0:
+        g = 1 - 0.38 * white
+        sat = 1 - 0.12 * white
+        stages.append(('wh', f"lutyuv=y='clip(pow(val/255,{g:.3f})*255+{12 * white:.1f},16,235)':"
+                             f"u='128+(val-128)*{sat:.3f}':v='128+(val-128)*{sat:.3f}'", 1.0))
+    n = len(stages)
+    if n > 1:
+        R.append(f"[{tag}mk]split={n}" + ''.join(f"[{tag}mk{j}]" for j in range(n)))
+    cur = f"{tag}0"
+    for j, (nm, eff, amt) in enumerate(stages):
+        mk = f"{tag}mk{j}" if n > 1 else f"{tag}mk"
+        R.append(f"[{mk}]lut=y=val*{amt:.3f},split=3[{tag}q{j}a][{tag}q{j}b][{tag}q{j}c]")
+        R.append(f"[{tag}q{j}a][{tag}q{j}b][{tag}q{j}c]mergeplanes=0x001020:yuv444p[{tag}m{j}]")
+        R.append(f"[{cur}]split=2[{tag}a{j}][{tag}b{j}]")
+        R.append(f"[{tag}b{j}]{eff}[{tag}e{j}]")
+        nxt = f"{tag}n{j}"
+        R.append(f"[{tag}a{j}][{tag}e{j}][{tag}m{j}]maskedmerge[{nxt}]")
+        cur = nxt
+    R.append(f"[{cur}]null[{dst}]")
+    return R
+
+
+def run_ff(cmd):
+    return run(cmd, text=True, encoding='utf-8', errors='replace')
+
+
+@app.route('/api/face', methods=['POST'])
+def face_detect():
+    d = request.get_json()
+    m = load_meta(d['mediaId'])
+    if not m['hasVideo']:
+        return jsonify(error='영상이 아닙니다'), 400
+    import cv2
+    t0, t1 = float(d.get('t0', 0)), float(d.get('t1', m['duration']))
+    n = 8
+    boxes = []
+    det = None
+    for i in range(n):
+        t = t0 + (t1 - t0) * (i + 0.5) / n
+        r = run([FFMPEG, '-v', 'error', '-ss', f'{t:.3f}', '-i', media_file(m), '-frames:v', '1', '-vf',
+                 'scale=640:-2', '-f', 'image2pipe', '-c:v', 'mjpeg', '-'])
+        if not r.stdout:
+            continue
+        img = cv2.imdecode(np.frombuffer(r.stdout, np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            continue
+        h, w = img.shape[:2]
+        if det is None:
+            det = cv2.FaceDetectorYN.create(os.path.join(BASE, 'models', 'face_detection_yunet_2023mar.onnx'), '', (w, h), 0.6)
+        det.setInputSize((w, h))
+        res = det.detect(img)[1]
+        if res is None:
+            continue
+        f = max(res, key=lambda r_: r_[2] * r_[3])
+        boxes.append((f[0] / w, f[1] / h, f[2] / w, f[3] / h))
+    if not boxes:
+        return jsonify(found=False)
+    a = np.median(np.array(boxes), axis=0)
+    x, y, bw, bh = [float(v) for v in a]
+    return jsonify(found=True, count=len(boxes), roi=dict(
+        cx=round(x + bw / 2, 4), cy=round(y + bh / 2 + bh * 0.08, 4),
+        rx=round(min(0.5, bw * 0.85), 4), ry=round(min(0.5, bh * 0.95), 4)))
+
+
+@app.route('/api/beauty_preview', methods=['POST'])
+def beauty_preview():
+    d = request.get_json()
+    m = load_meta(d['mediaId'])
+    b = d['beauty']
+    t = max(0.0, min(float(d.get('t', 0)), max(0.0, m['duration'] - 0.1)))
+    out = os.path.join(CACHE, 'bp_' + uuid.uuid4().hex[:8] + '.jpg')
+    chains = ["[0:v]scale=640:-2,split=2[pa][pb]"]
+    sw = 640
+    sh = int(round(m['h'] * 640 / max(1, m['w']) / 2) * 2)
+    chains += beauty_filters('p', 'pb', 'pz', b if b.get('on') else {**b, 'on': True}, sw, sh, 1)
+    chains.append("[pa]format=yuv420p[pa2];[pz]format=yuv420p[pz2];[pa2][pz2]hstack[o]")
+    r = run_ff([FFMPEG, '-y', '-v', 'error', '-ss', f'{t:.3f}', '-i', media_file(m), '-filter_complex', ';'.join(chains),
+                '-map', '[o]', '-frames:v', '1', '-q:v', '3', out])
+    if r.returncode != 0 or not os.path.exists(out):
+        return jsonify(error=r.stderr[-400:]), 500
+    resp = send_file(out, mimetype='image/jpeg')
+    resp.call_on_close(lambda: os.path.exists(out) and os.remove(out))
+    return resp
+
+
 # ---------------------------------------------------------------- export
 def atempo_chain(s):
     f = []
@@ -436,6 +559,11 @@ def run_export(job, P, burn):
         k = add(media_file(m))
         rot = int(c.get('rot', 0)) % 360
         ch = f"[{k}:v]trim=start={a_in:.4f}:end={a_out:.4f},setpts=(PTS-STARTPTS)/{sp:.5f},fps=30"
+        bt = c.get('beauty')
+        if beauty_active(bt):
+            fc.append(ch + f"[bx{i}]")
+            fc.extend(beauty_filters(f"b{i}", f"bx{i}", f"bz{i}", bt, m['w'], m['h'], L))
+            ch = f"[bz{i}]null"
         if c.get('flip'):
             ch += ',hflip'
         ch += {0: '', 90: ',transpose=1', 180: ',transpose=1,transpose=1', 270: ',transpose=2'}[rot]
