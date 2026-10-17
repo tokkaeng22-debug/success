@@ -1,0 +1,963 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>로컬 영상 편집기</title>
+<style>
+:root{--bg:#0f1115;--p1:#171a21;--p2:#1e222b;--p3:#272c37;--line:#2e3441;--tx:#e8ebf2;--dim:#8a93a6;--ac:#22d3ee;--ac2:#0ea5b7;--danger:#f87171;--ok:#4ade80;--clip:#3b5bdb;--aud:#2f9e6e}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--tx);font:13px/1.4 "Malgun Gothic","Segoe UI",system-ui,sans-serif;overflow:hidden}
+button{font:inherit;color:var(--tx);background:var(--p3);border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer}
+button:hover{background:#323949}button:active{background:#3a4155}
+button.pri{background:var(--ac);color:#04222a;border-color:var(--ac);font-weight:700}button.pri:hover{background:#5ee3f5}
+button.on{background:var(--ac2);border-color:var(--ac);color:#fff}
+button.dng:hover{background:#7f1d1d;border-color:var(--danger)}
+button:disabled{opacity:.4;cursor:default}
+input,select{font:inherit;color:var(--tx);background:var(--p1);border:1px solid var(--line);border-radius:6px;padding:4px 6px;min-width:0}
+input[type=range]{padding:0;accent-color:var(--ac);flex:1;height:18px}
+input[type=checkbox]{accent-color:var(--ac)}
+#app{display:grid;height:100%;grid-template-rows:46px 1fr 300px;grid-template-columns:310px 1fr 340px}
+header{grid-column:1/4;display:flex;align-items:center;gap:8px;padding:0 12px;background:var(--p1);border-bottom:1px solid var(--line)}
+header .logo{font-weight:800;color:var(--ac);font-size:15px;margin-right:10px}
+#tasks{display:flex;gap:6px;flex:1;overflow:hidden;justify-content:center}
+.task{background:var(--p3);border-radius:12px;padding:2px 10px;font-size:12px;position:relative;overflow:hidden;white-space:nowrap;max-width:300px;text-overflow:ellipsis}
+.task i{position:absolute;left:0;top:0;bottom:0;background:rgba(34,211,238,.28)}
+.task span{position:relative}
+.panel{background:var(--p1);overflow:auto;min-height:0}
+#left{border-right:1px solid var(--line);display:flex;flex-direction:column}
+#right{border-left:1px solid var(--line);padding:8px}
+.tabs{display:flex;border-bottom:1px solid var(--line);flex:none}
+.tabs button{flex:1;border:0;border-radius:0;background:transparent;padding:9px 4px;color:var(--dim)}
+.tabs button.on{color:var(--ac);background:var(--p2);box-shadow:inset 0 -2px var(--ac)}
+.tabbody{flex:1;overflow:auto;padding:8px;min-height:0}
+.hbtns{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+#drop{border:2px dashed var(--line);border-radius:10px;padding:14px;text-align:center;color:var(--dim);margin-bottom:8px;cursor:pointer}
+#drop:hover,#drop.over{border-color:var(--ac);color:var(--ac)}
+.mi{display:flex;gap:8px;align-items:center;padding:5px;border-radius:8px;border:1px solid transparent;cursor:pointer}
+.mi:hover{background:var(--p2)}.mi.sel{background:var(--p3);border-color:var(--ac)}
+.mi .th{width:64px;height:40px;border-radius:5px;background:#000 center/cover;display:flex;align-items:center;justify-content:center;font-size:18px;flex:none}
+.mi .nm{flex:1;min-width:0}.mi .nm b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.mi .nm small{color:var(--dim)}
+.badge{font-size:10px;padding:1px 6px;border-radius:8px;background:var(--p3);color:var(--dim);margin-left:4px}
+.badge.use{background:#14532d;color:var(--ok)}
+.mi .ib{padding:2px 7px}
+#center{display:flex;flex-direction:column;min-width:0;min-height:0;background:#0b0d11}
+#stage{flex:1;display:flex;align-items:center;justify-content:center;min-height:0;position:relative;padding:10px}
+#frame{position:relative;background:#000;overflow:hidden;box-shadow:0 0 0 1px var(--line);touch-action:none;cursor:move}
+#vid{position:absolute;transform-origin:center;pointer-events:none;max-width:none;display:block}
+#subOv{position:absolute;left:5%;right:5%;bottom:6%;text-align:center;color:#fff;font-weight:700;text-shadow:0 0 4px #000,0 0 4px #000,0 0 3px #000;pointer-events:none;white-space:pre-wrap}
+#empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--dim);text-align:center;pointer-events:none}
+#transport{display:flex;align-items:center;justify-content:center;gap:8px;padding:6px;border-top:1px solid var(--line);background:var(--p1)}
+#transport .tm{font-variant-numeric:tabular-nums;min-width:150px;text-align:center;color:var(--ac)}
+#transport button{min-width:38px}
+#tlwrap{grid-column:1/4;display:flex;flex-direction:column;background:var(--p1);border-top:1px solid var(--line);min-height:0}
+#tltools{display:flex;gap:6px;align-items:center;padding:6px 10px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+#tltools .sp{flex:1}
+#tltools input[type=range]{flex:none;width:110px}
+#tl{flex:1;overflow:auto;position:relative;min-height:0}
+#tlin{position:relative;min-height:100%}
+#ruler{height:24px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--p2);z-index:5;cursor:pointer}
+.tk{position:absolute;top:0;bottom:0;border-left:1px solid #3b4252;padding-left:3px;font-size:10px;color:var(--dim);pointer-events:none}
+.row{position:relative;height:56px;margin-top:6px}
+.row.arow{height:42px;margin-top:4px}
+.lane{position:absolute;left:0;right:0;top:0;bottom:0}
+.clip,.atr{position:absolute;top:0;bottom:0;border-radius:6px;overflow:hidden;cursor:grab;user-select:none;border:2px solid transparent}
+.clip{background:var(--clip) center left/auto 100% repeat-x;background-blend-mode:multiply}
+.clip canvas,.atr canvas{position:absolute;left:0;bottom:0;width:100%;height:55%;pointer-events:none;opacity:.85}
+.clip .lb,.atr .lb{position:absolute;left:10px;top:2px;right:10px;font-size:11px;font-weight:600;text-shadow:0 0 3px #000;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
+.atr{background:var(--aud)}
+.clip.sel,.atr.sel{border-color:#fff}
+.hl,.hr{position:absolute;top:0;bottom:0;width:9px;background:rgba(255,255,255,.35);cursor:ew-resize;z-index:2}
+.hl{left:0}.hr{right:0}
+.hl:hover,.hr:hover{background:rgba(255,255,255,.8)}
+#ph{position:absolute;top:0;bottom:0;width:0;border-left:2px solid #ff4d6d;z-index:8;pointer-events:none}
+#ph:before{content:"";position:absolute;left:-7px;top:0;border:6px solid transparent;border-top-color:#ff4d6d}
+#bladeLine{position:absolute;top:24px;bottom:0;width:0;border-left:1px dashed #fff;z-index:7;pointer-events:none;display:none}
+#dropLine{position:absolute;top:24px;height:58px;width:3px;background:var(--ac);z-index:7;display:none}
+.rowlab{position:sticky;left:4px;z-index:6;font-size:10px;color:var(--dim);pointer-events:none;height:0}
+.card{background:var(--p2);border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin-bottom:8px}
+.card h3{margin:0 0 6px;font-size:12px;color:var(--ac);letter-spacing:.3px}
+.fr{display:flex;align-items:center;gap:6px;margin:5px 0;flex-wrap:wrap}
+.fr>label{width:74px;color:var(--dim);flex:none;font-size:12px}
+.fr input[type=text],.fr input[type=number]{width:74px}
+.fr .num{width:62px}
+.grp{display:flex;gap:4px;flex-wrap:wrap}
+.grp button{padding:4px 8px}
+.hint{color:var(--dim);font-size:11px}
+.sub{display:flex;gap:4px;align-items:center;margin-bottom:4px}
+.sub input.t{flex:1}.sub input.tm{width:62px;padding:3px}
+.pbar{height:6px;background:var(--p3);border-radius:4px;overflow:hidden;margin:6px 0}
+.pbar i{display:block;height:100%;background:var(--ac);width:0}
+.stem{background:var(--p2);border:1px solid var(--line);border-radius:10px;padding:8px;margin:8px 0}
+.stem audio{width:100%;height:34px}
+#toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#000c;border:1px solid var(--ac);padding:8px 16px;border-radius:20px;z-index:99;display:none}
+#modal{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;z-index:50}
+#modal .box{background:var(--p1);border:1px solid var(--line);border-radius:12px;padding:18px;width:420px;max-width:92vw}
+#dropAll{position:fixed;inset:0;border:4px dashed var(--ac);background:rgba(34,211,238,.12);display:none;align-items:center;justify-content:center;font-size:26px;z-index:60;pointer-events:none}
+::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:#3a4052;border-radius:5px}::-webkit-scrollbar-track{background:transparent}
+</style>
+</head>
+<body>
+<div id="app">
+<header>
+  <span class="logo">✂ 로컬 영상 편집기</span>
+  <button id="bUndo" title="실행취소 (Ctrl+Z)">↶ 실행취소</button>
+  <button id="bRedo" title="다시 실행 (Ctrl+Y)">↷ 다시실행</button>
+  <div id="tasks"></div>
+  <button id="bExport" class="pri">⬇ 내보내기</button>
+</header>
+
+<aside id="left" class="panel">
+  <div class="tabs"><button data-t="media" class="on">미디어</button><button data-t="subs">자막</button><button data-t="sep">음성 분리</button></div>
+  <div class="tabbody" id="tab-media">
+    <div class="hbtns">
+      <button class="pri" id="bAdd">＋ 영상 / 음악 추가</button>
+      <button id="bClean" title="타임라인에서 쓰지 않는 미디어를 프로젝트에서 제거">🧹 미사용 정리</button>
+    </div>
+    <div id="drop">여기로 파일을 끌어다 놓거나 클릭하세요<br><small>여러 개 가능 · 영상 / 음악 / 음성</small></div>
+    <input type="file" id="file" multiple accept="video/*,audio/*,.mkv,.avi,.mov,.flv,.wmv,.m4a,.aac,.flac" hidden>
+    <div id="mlist"></div>
+    <p class="hint" id="mhint">파일 선택 후 <b>Del</b> = 프로젝트에서 제거 (디스크 원본은 삭제되지 않음)<br>더블클릭 = 타임라인에 추가</p>
+  </div>
+  <div class="tabbody" id="tab-subs" hidden></div>
+  <div class="tabbody" id="tab-sep" hidden></div>
+</aside>
+
+<section id="center">
+  <div id="stage"><div id="frame"><video id="vid" playsinline preload="auto"></video><div id="subOv"></div><div id="empty">미디어를 추가하고<br>타임라인에 올려 주세요</div></div></div>
+  <div id="transport">
+    <button id="bHome" title="처음으로 (Home)">⏮</button>
+    <button id="bFb" title="1프레임 뒤로 (←)">◀|</button>
+    <button id="bPlay" class="pri" title="재생/정지 (Space)" style="min-width:56px">▶</button>
+    <button id="bFf" title="1프레임 앞으로 (→)">|▶</button>
+    <button id="bEnd" title="끝으로 (End)">⏭</button>
+    <span class="tm" id="tm">0:00.00 / 0:00.00</span>
+    <span class="hint" id="outsz"></span>
+  </div>
+</section>
+
+<aside id="right" class="panel"></aside>
+
+<section id="tlwrap">
+  <div id="tltools">
+    <button id="bSplit" title="재생 막대 위치에서 분할 (S)">✂ 분할 (S)</button>
+    <button id="bBlade" title="칼 도구: 컷을 클릭한 지점에서 자름 (B)">🔪 칼 도구 (B)</button>
+    <button id="bDel" class="dng" title="선택 삭제 (Del)">🗑 삭제</button>
+    <button id="bDup">⧉ 복제</button>
+    <button id="bLeft" title="컷을 앞으로">◀ 앞으로</button>
+    <button id="bRight" title="컷을 뒤로">뒤로 ▶</button>
+    <button id="bMusic" title="음악/음성 파일을 타임라인에 추가">🎵 음악 추가</button>
+    <span class="sp"></span>
+    <span class="hint">확대</span>
+    <button id="zOut" style="padding:3px 8px">−</button><input type="range" id="zoom" min="3" max="300" value="40"><button id="zIn" style="padding:3px 8px">＋</button>
+    <button id="zFit">맞춤</button>
+  </div>
+  <div id="tl"><div id="tlin"><div id="ruler"></div><div id="rows"></div><div id="ph"></div><div id="bladeLine"></div><div id="dropLine"></div></div></div>
+</section>
+</div>
+
+<div id="toast"></div>
+<div id="dropAll">파일을 놓아 추가</div>
+<div id="modal"><div class="box" id="mbox"></div></div>
+<input type="file" id="fileMusic" multiple accept="audio/*,video/*" hidden>
+
+<script>
+'use strict';
+const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
+const uid=()=>Math.random().toString(36).slice(2,9);
+const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
+const r2=v=>Math.round(v*100)/100;
+function h(tag,cls,txt){const e=document.createElement(tag);if(cls)e.className=cls;if(txt!=null)e.textContent=txt;return e}
+function fmt(t){t=Math.max(0,t||0);const m=Math.floor(t/60),s=t-m*60;return m+':'+(s<10?'0':'')+s.toFixed(2)}
+function parseT(s){s=String(s).trim().replace(',','.');const p=s.split(':').map(Number);if(!p.length||p.some(isNaN))return NaN;return p.reduce((a,b)=>a*60+b,0)}
+let toastT;function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';clearTimeout(toastT);toastT=setTimeout(()=>t.style.display='none',3200)}
+
+/* ================= state ================= */
+function blank(){return{media:[],clips:[],tracks:[],subs:{},settings:{ratio:'orig',short:1080,fit:'contain',origVol:1,syncMs:0,burn:false,autoSub:true,lang:'',model:'small'}}}
+let P=blank();
+let sel=null;            // {type:'clip'|'track', id}
+let selMedia=null, focusArea='tl';
+let T=0, playing=false, blade=false, zoom=40, LY=[], vidMid=null, vidReady=false, curIdx=-1;
+const sepInfo={};        // mid -> {done,hash}
+const sepVol={};         // mid -> {v,m} (stem preview/apply volumes)
+
+/* ---- undo/redo ---- */
+let undoS=[],redoS=[],lastKey='',lastT=0;
+function snap(key){const n=Date.now();if(key&&key===lastKey&&n-lastT<800){lastT=n;return}lastKey=key||'';lastT=n;undoS.push(JSON.stringify(P));if(undoS.length>150)undoS.shift();redoS=[];updUndo()}
+function updUndo(){$('#bUndo').disabled=!undoS.length;$('#bRedo').disabled=!redoS.length}
+function undo(){if(!undoS.length)return;redoS.push(JSON.stringify(P));P=JSON.parse(undoS.pop());lastKey='';restored();toast('실행취소')}
+function redo(){if(!redoS.length)return;undoS.push(JSON.stringify(P));P=JSON.parse(redoS.pop());lastKey='';restored();toast('다시 실행')}
+function restored(){if(sel&&!findSel())sel=null;if(selMedia&&!media(selMedia))selMedia=null;updUndo();changed({struct:1,nosnap:1,tabs:1})}
+function edit(fn,key,o){snap(key);fn();changed(o||{})}
+
+/* ---- persistence ---- */
+let saveT;function save(){clearTimeout(saveT);saveT=setTimeout(()=>fetch('/api/project',{method:'POST',body:JSON.stringify(P)}).catch(()=>{}),700)}
+
+/* ================= helpers ================= */
+const media=id=>P.media.find(m=>m.id===id);
+const clipOf=id=>P.clips.find(c=>c.id===id);
+const trackOf=id=>P.tracks.find(t=>t.id===id);
+function findSel(){return sel&&(sel.type==='clip'?clipOf(sel.id):trackOf(sel.id))}
+function layout(){let t=0;return P.clips.map(c=>{const len=(c.out-c.in)/c.speed;const o={c,start:t,len,end:t+len};t+=len;return o})}
+const total=()=>LY.length?LY[LY.length-1].end:0;
+function idxAt(t){for(let i=0;i<LY.length;i++)if(t<LY[i].end-1e-9)return i;return LY.length-1}
+function usedMids(){const s=new Set();P.clips.forEach(c=>s.add(c.mid));P.tracks.forEach(t=>s.add(t.mid));return s}
+function outSize(){
+  const s=P.settings;let a=16,b=9;
+  if(s.ratio==='orig'){
+    const c=P.clips[0],m=c&&media(c.mid);
+    if(m&&m.w){const sw=c.rot%180?m.h:m.w,sh=c.rot%180?m.w:m.h;const k=Math.min(1,s.short/Math.min(sw,sh));return{W:Math.max(2,Math.round(sw*k/2)*2),H:Math.max(2,Math.round(sh*k/2)*2)}}
+  }else[a,b]=s.ratio.split(':').map(Number);
+  const sh=s.short;let W,H;
+  if(a>=b){H=sh;W=Math.round(sh*a/b)}else{W=sh;H=Math.round(sh*b/a)}
+  return{W:Math.round(W/2)*2,H:Math.round(H/2)*2}
+}
+function geom(c){
+  const m=media(c.mid),{W,H}=outSize();const sw=m.w,sh=m.h,swap=c.rot%180!==0;
+  const rw=swap?sh:sw,rh=swap?sw:sh;
+  const k=P.settings.fit==='cover'?Math.max(W/rw,H/rh):Math.min(W/rw,H/rh);
+  return{W,H,k,sw,sh,cx:W/2+c.x*W,cy:H/2+c.y*H,bw:rw*k*c.scale,bh:rh*k*c.scale}
+}
+function timelineSubs(){
+  const out=[];
+  for(const o of LY){for(const s of(P.subs[o.c.mid]||[])){
+    if(s.e<=o.c.in||s.s>=o.c.out)continue;
+    const a=Math.max(s.s,o.c.in),b=Math.min(s.e,o.c.out);
+    out.push({s:o.start+(a-o.c.in)/o.c.speed,e:o.start+(b-o.c.in)/o.c.speed,t:s.t})}}
+  return out
+}
+
+/* ================= upload / media ================= */
+let upQ=0;
+function uploadFiles(files){
+  files=[...files];if(!files.length)return;
+  (async()=>{for(const f of files)await uploadOne(f)})();
+}
+function uploadOne(f){
+  return new Promise(res=>{
+    const t=addTask('업로드: '+f.name);
+    const fd=new FormData();fd.append('file',f);
+    const x=new XMLHttpRequest();x.open('POST','/api/upload');
+    x.upload.onprogress=e=>{if(e.lengthComputable)t.set(e.loaded/e.total*0.85,'업로드: '+f.name)};
+    x.onload=()=>{
+      let d;try{d=JSON.parse(x.responseText)}catch(e){d={error:'서버 오류'}}
+      t.done();
+      if(d.error){toast(f.name+': '+d.error);return res()}
+      snap();P.media.push(d);selMedia=d.id;
+      changed({struct:1,tabs:1});toast('추가됨: '+d.name);
+      if(d.hasAudio&&P.settings.autoSub)startTranscribe(d.id);
+      res()};
+    x.onerror=()=>{t.done();toast('업로드 실패');res()};
+    x.onloadend=()=>{};
+    x.upload.onload=()=>t.set(0.9,'변환/분석 중: '+f.name);
+    x.send(fd)})
+}
+function addTask(label){
+  const e=h('div','task'),b=h('i'),s=h('span',null,label);e.append(b,s);$('#tasks').append(e);
+  return{set(p,l){b.style.width=Math.round(p*100)+'%';if(l)s.textContent=l+' '+Math.round(p*100)+'%'},done(){e.remove()},el:e}
+}
+function pollJob(jid,t,label,onDone,onErr){
+  const iv=setInterval(async()=>{
+    let j;try{j=await(await fetch('/api/jobs/'+jid)).json()}catch(e){return}
+    t.set(j.progress||0,label+(j.msg?' · '+j.msg:''));
+    if(j.state==='done'){clearInterval(iv);t.done();onDone(j.result)}
+    else if(j.state==='error'){clearInterval(iv);t.done();toast(label+' 실패: '+j.msg);onErr&&onErr()}
+  },800)
+}
+function renderMedia(){
+  const used=usedMids(),box=$('#mlist');box.innerHTML='';
+  if(!P.media.length)box.append(h('p','hint','아직 불러온 파일이 없습니다.'));
+  for(const m of P.media){
+    const e=h('div','mi'+(selMedia===m.id?' sel':''));
+    const th=h('div','th');if(m.kind==='video')th.style.backgroundImage=`url(/thumb/${m.id})`;else th.textContent='🎵';
+    const nm=h('div','nm');const b=h('b',null,m.name);b.title=m.name;
+    const sm=h('small',null,fmt(m.duration)+(m.kind==='video'?` · ${m.w}×${m.h}`:' · 오디오'));
+    sm.append(h('span','badge'+(used.has(m.id)?' use':''),used.has(m.id)?'사용 중':'미사용'));
+    if(P.subs[m.id])sm.append(h('span','badge','자막'));
+    nm.append(b,sm);
+    const add=h('button','ib','＋');add.title='타임라인에 추가';add.onclick=ev=>{ev.stopPropagation();addToTimeline(m)};
+    const del=h('button','ib dng','🗑');del.title='프로젝트에서 제거 (Del)';del.onclick=ev=>{ev.stopPropagation();removeMedia(m.id)};
+    e.append(th,nm,add,del);
+    e.onclick=()=>{selMedia=m.id;focusArea='media';renderMedia();renderTabs()};
+    e.ondblclick=()=>addToTimeline(m);
+    box.append(e)}
+}
+function addToTimeline(m){
+  if(m.kind==='video'){
+    const c={id:uid(),mid:m.id,in:0,out:m.duration,speed:1,vol:1,mute:false,fi:0,fo:0,scale:1,x:0,y:0,rot:0,flip:false,sep:{mode:'orig',v:1,m:1}};
+    const startT=total();
+    edit(()=>{P.clips.push(c);sel={type:'clip',id:c.id}},null,{struct:1,seek:startT});
+  }else{
+    const tr={id:uid(),mid:m.id,start:r2(T),in:0,out:m.duration,dur:m.duration,vol:1,mute:false,loop:false,fi:0,fo:0};
+    edit(()=>{P.tracks.push(tr);sel={type:'track',id:tr.id}},null,{struct:1});
+  }
+}
+function removeMedia(id){
+  const m=media(id);if(!m)return;
+  const nc=P.clips.filter(c=>c.mid===id).length,nt=P.tracks.filter(t=>t.mid===id).length;
+  if(nc+nt&&!confirm(`'${m.name}' 은(는) 타임라인에서 사용 중입니다.\n관련 컷 ${nc}개`+(nt?`, 음원 ${nt}개`:'')+`도 함께 삭제됩니다.\n\n계속할까요?\n(디스크의 원본 파일은 삭제되지 않습니다)`))return;
+  edit(()=>{P.media=P.media.filter(x=>x.id!==id);P.clips=P.clips.filter(c=>c.mid!==id);P.tracks=P.tracks.filter(t=>t.mid!==id);delete P.subs[id];
+    if(selMedia===id)selMedia=null;if(sel&&!findSel())sel=null},null,{struct:1,tabs:1});
+  toast('프로젝트에서 제거했습니다 (원본 보존)')
+}
+function cleanUnused(){
+  const used=usedMids(),un=P.media.filter(m=>!used.has(m.id));
+  if(!un.length)return toast('미사용 미디어가 없습니다');
+  if(!confirm(`사용하지 않는 미디어 ${un.length}개를 프로젝트에서 제거할까요?\n\n`+un.map(m=>'· '+m.name).join('\n')+'\n\n(디스크의 원본 파일은 삭제되지 않습니다)'))return;
+  edit(()=>{P.media=P.media.filter(m=>used.has(m.id));un.forEach(m=>delete P.subs[m.id]);if(selMedia&&!media(selMedia))selMedia=null},null,{struct:1,tabs:1});
+}
+
+/* ================= clip operations ================= */
+function splitAt(t){
+  if(!LY.length)return;
+  const i=idxAt(t),o=LY[i];
+  if(t-o.start<0.05||o.end-t<0.05)return toast('컷의 가장자리에서는 자를 수 없습니다');
+  const src=o.c.in+(t-o.start)*o.c.speed;
+  edit(()=>{const c=o.c,b=JSON.parse(JSON.stringify(c));b.id=uid();b.in=src;c.out=src;c.fo=0;b.fi=0;P.clips.splice(i+1,0,b)},null,{struct:1,keepT:1});
+}
+function delSel(){
+  if(!sel)return;
+  if(sel.type==='clip'){edit(()=>{P.clips=P.clips.filter(c=>c.id!==sel.id);sel=null},null,{struct:1})}
+  else{edit(()=>{P.tracks=P.tracks.filter(c=>c.id!==sel.id);sel=null},null,{struct:1})}
+}
+function dupSel(){
+  if(!sel)return;
+  if(sel.type==='clip'){const i=P.clips.findIndex(c=>c.id===sel.id);edit(()=>{const b=JSON.parse(JSON.stringify(P.clips[i]));b.id=uid();P.clips.splice(i+1,0,b);sel={type:'clip',id:b.id}},null,{struct:1})}
+  else{edit(()=>{const b=JSON.parse(JSON.stringify(trackOf(sel.id)));b.id=uid();b.start+=b.dur;P.tracks.push(b);sel={type:'track',id:b.id}},null,{struct:1})}
+}
+function moveSel(d){
+  if(!sel||sel.type!=='clip')return toast('이동할 컷을 선택하세요');
+  const i=P.clips.findIndex(c=>c.id===sel.id),j=i+d;if(j<0||j>=P.clips.length)return;
+  edit(()=>{const [c]=P.clips.splice(i,1);P.clips.splice(j,0,c)},null,{struct:1});
+}
+
+/* ================= preview engine ================= */
+const vid=$('#vid'),frame=$('#frame'),aV=new Audio(),aM=new Audio();
+aV.preload=aM.preload='auto';
+let actx=null,gVid,gV,gM;const trEls={};
+function ensureAudio(){
+  if(actx)return;
+  actx=new(window.AudioContext||window.webkitAudioContext)();
+  const mk=el=>{const s=actx.createMediaElementSource(el),g=actx.createGain();s.connect(g);g.connect(actx.destination);return g};
+  gVid=mk(vid);gV=mk(aV);gM=mk(aM);
+}
+function ensureTrackEl(t){
+  let o=trEls[t.id];
+  if(!o||o.mid!==t.mid){
+    if(o){o.el.pause();o.el.removeAttribute('src')}
+    const el=new Audio('/preview/'+t.mid);el.preload='auto';
+    ensureAudio();const s=actx.createMediaElementSource(el),g=actx.createGain();s.connect(g);g.connect(actx.destination);
+    o=trEls[t.id]={el,g,mid:t.mid}}
+  return o
+}
+function fadeF(pos,len,fi,fo){let f=1;if(fi>0.01&&pos<fi)f=Math.min(f,pos/fi);if(fo>0.01&&pos>len-fo)f=Math.min(f,(len-pos)/fo);return clamp(f,0,1)}
+
+function layoutFrame(){
+  const {W,H}=outSize(),st=$('#stage'),aw=st.clientWidth-20,ah=st.clientHeight-20;
+  const k=Math.max(0.05,Math.min(aw/W,ah/H));
+  frame.style.width=W*k+'px';frame.style.height=H*k+'px';
+  frame.style.fontSize=Math.max(10,H*k*0.045)+'px';
+  $('#outsz').textContent=`출력 ${W} × ${H} px`;
+}
+function applyVisual(){
+  const o=LY[curIdx];$('#empty').style.display=o?'none':'flex';
+  vid.style.display=o?'block':'none';
+  if(!o)return;
+  const c=o.c,g=geom(c);
+  vid.style.width=(g.sw*g.k*c.scale/g.W*100)+'%';vid.style.height=(g.sh*g.k*c.scale/g.H*100)+'%';
+  vid.style.left=(g.cx/g.W*100)+'%';vid.style.top=(g.cy/g.H*100)+'%';
+  vid.style.transform=`translate(-50%,-50%) rotate(${c.rot}deg) scaleX(${c.flip?-1:1})`;
+}
+function sepKey(c){return c.sep&&c.sep.mode!=='orig'}
+function setSepSrc(c){
+  const m=media(c.mid);
+  if(!sepKey(c)||!m){for(const a of[aV,aM]){if(a.getAttribute('src')){a.pause();a.removeAttribute('src')}}return}
+  const sv=`/sep/${m.hash}/vocals.wav`,sm=`/sep/${m.hash}/music.wav`;
+  if(aV.getAttribute('src')!==sv)aV.src=sv;if(aM.getAttribute('src')!==sm)aM.src=sm;
+}
+function seekTo(t,opt={}){
+  const tt=total();T=clamp(t,0,tt);
+  if(!LY.length){curIdx=-1;vid.removeAttribute('src');vidMid=null;applyVisual();updHead();return}
+  const i=idxAt(Math.min(T,tt-1e-6)),o=LY[i],c=o.c;
+  curIdx=i;
+  const tv=c.in+clamp(T-o.start,0,o.len)*c.speed;
+  applyVisual();setSepSrc(c);
+  const go=()=>{vid.currentTime=tv;vid.playbackRate=c.speed;vidReady=true;
+    for(const a of[aV,aM])if(a.getAttribute('src')){try{a.currentTime=tv;a.playbackRate=c.speed}catch(e){}}
+    if(playing)startMedia()};
+  if(vidMid!==c.mid){
+    vidMid=c.mid;vidReady=false;vid.src='/preview/'+c.mid;
+    vid.addEventListener('loadedmetadata',function f(){vid.removeEventListener('loadedmetadata',f);if(vidMid===c.mid&&LY[curIdx]&&LY[curIdx].c.mid===c.mid){const o2=LY[curIdx];const tv2=o2.c.in+clamp(T-o2.start,0,o2.len)*o2.c.speed;vid.currentTime=tv2;vid.playbackRate=o2.c.speed;vidReady=true;if(playing)startMedia()}});
+  }else go();
+  updHead();updTime();
+}
+function startMedia(){
+  const c=LY[curIdx]&&LY[curIdx].c;
+  vid.play().catch(()=>{});
+  if(c&&sepKey(c))for(const a of[aV,aM])if(a.getAttribute('src'))a.play().catch(()=>{});
+}
+function pauseAll(){vid.pause();aV.pause();aM.pause();for(const k in trEls)trEls[k].el.pause()}
+function play(){
+  if(!LY.length)return toast('타임라인에 컷을 추가하세요');
+  ensureAudio();actx.resume();
+  if(T>=total()-0.05)seekTo(0);
+  playing=true;$('#bPlay').textContent='⏸';
+  if(vidReady)startMedia();
+}
+function pause(){playing=false;$('#bPlay').textContent='▶';pauseAll()}
+function togglePlay(){playing?pause():play()}
+function step(n){pause();const m=LY[curIdx]&&media(LY[curIdx].c.mid);seekTo(T+n/((m&&m.fps)||30))}
+
+function tick(){
+  if(playing&&LY[curIdx]&&vidReady){
+    const o=LY[curIdx],c=o.c,vt=vid.currentTime;
+    T=o.start+(vt-c.in)/c.speed;
+    if(vt>=c.out-0.03||vid.ended){
+      if(curIdx+1>=LY.length){T=total();pause();seekTo(total()-1e-4)}
+      else{seekTo(LY[curIdx+1].start+1e-4)}
+    }
+  }
+  audioMix();updHead();updTime();
+  requestAnimationFrame(tick)
+}
+function audioMix(){
+  if(!actx)return;
+  const o=LY[curIdx];
+  if(o){
+    const c=o.c,pos=clamp(T-o.start,0,o.len);
+    const base=P.settings.origVol*(c.mute?0:c.vol)*fadeF(pos,o.len,c.fi,c.fo);
+    const mode=c.sep?c.sep.mode:'orig';
+    gVid.gain.value=mode==='orig'?base:0;
+    gV.gain.value=(mode==='both'||mode==='vocals')?base*c.sep.v:0;
+    gM.gain.value=(mode==='both'||mode==='music')?base*c.sep.m:0;
+    if(playing&&mode!=='orig'&&vidReady)for(const a of[aV,aM]){
+      if(!a.getAttribute('src'))continue;
+      if(a.paused)a.play().catch(()=>{});
+      if(Math.abs(a.currentTime-vid.currentTime)>0.18)a.currentTime=vid.currentTime;
+      a.playbackRate=c.speed}
+  }
+  for(const t of P.tracks){
+    const o2=ensureTrackEl(t),el=o2.el,rel=T-t.start,seg=Math.max(0.05,t.out-t.in);
+    const inside=rel>=0&&rel<t.dur&&(t.loop||rel<seg);
+    if(!playing||!inside){if(!el.paused)el.pause();continue}
+    const target=t.in+(t.loop?rel%seg:rel);
+    o2.g.gain.value=(t.mute?0:t.vol)*fadeF(rel,t.dur,t.fi,t.fo);
+    if(el.paused){el.currentTime=target;el.play().catch(()=>{})}
+    else{
+      if(t.loop&&el.currentTime>=t.out-0.02)el.currentTime=t.in;
+      else if(Math.abs(el.currentTime-target)>0.25&&!(t.loop&&Math.abs(Math.abs(el.currentTime-target)-seg)<0.25))el.currentTime=target}
+  }
+  for(const id in trEls)if(!trackOf(id)){trEls[id].el.pause();delete trEls[id]}
+}
+function updTime(){$('#tm').textContent=fmt(T)+' / '+fmt(total());
+  const s=timelineSubs();const cur=s.find(x=>T>=x.s&&T<x.e);$('#subOv').textContent=cur?cur.t:''}
+function updHead(){
+  $('#ph').style.left=(T*zoom)+'px';
+  if(playing){const tl=$('#tl'),x=T*zoom;if(x>tl.scrollLeft+tl.clientWidth-60||x<tl.scrollLeft)tl.scrollLeft=Math.max(0,x-80)}
+}
+/* drag the picture inside the preview */
+(function(){
+  let d=null;
+  frame.addEventListener('pointerdown',e=>{
+    const o=LY[curIdx];if(!o)return;
+    snap();frame.setPointerCapture(e.pointerId);
+    sel={type:'clip',id:o.c.id};
+    d={x:e.clientX,y:e.clientY,ox:o.c.x,oy:o.c.y,c:o.c};buildInspector();renderTimeline()});
+  frame.addEventListener('pointermove',e=>{
+    if(!d)return;const r=frame.getBoundingClientRect();
+    let x=d.ox+(e.clientX-d.x)/r.width,y=d.oy+(e.clientY-d.y)/r.height;
+    if(Math.abs(x)<0.012)x=0;if(Math.abs(y)<0.012)y=0;
+    d.c.x=r2(x*1000)/1000;d.c.y=r2(y*1000)/1000;changed({vis:1})});
+  const end=()=>{d=null};frame.addEventListener('pointerup',end);frame.addEventListener('pointercancel',end);
+  frame.addEventListener('wheel',e=>{const o=LY[curIdx];if(!o)return;e.preventDefault();
+    edit(()=>{o.c.scale=clamp(r2(o.c.scale*(e.deltaY<0?1.05:1/1.05)*100)/100,1,4)},'wheelscale',{vis:1})},{passive:false});
+})();
+
+/* ================= changed() ================= */
+function changed(o={}){
+  LY=layout();save();
+  const tt=total();
+  if(o.struct){renderMedia();buildInspector()}else refreshInspector();
+  if(o.tabs)renderTabs();
+  renderTimeline();layoutFrame();
+  if(o.seek!=null){seekTo(o.seek)}
+  else if(o.vis){curIdx=LY.length?idxAt(Math.min(T,tt-1e-6)):-1;applyVisual();updTime()}
+  else seekTo(Math.min(T,tt));
+  if(!o.nosnap)updUndo();
+}
+
+/* ================= timeline UI ================= */
+const peaks={},peakLoading={};
+let tlRaf=0;function schedTL(){cancelAnimationFrame(tlRaf);tlRaf=requestAnimationFrame(renderTimeline)}
+function getPeaks(mid){
+  if(peaks[mid])return peaks[mid];
+  if(!peakLoading[mid]){peakLoading[mid]=1;fetch('/api/peaks/'+mid).then(r=>r.arrayBuffer()).then(b=>{peaks[mid]=new Uint8Array(b);schedTL()})}
+  return null
+}
+function drawWave(cv,mid,t0,t1,col){
+  const pk=getPeaks(mid);if(!pk||!pk.length)return;
+  const w=cv.width,hh=cv.height,g=cv.getContext('2d');g.fillStyle=col;
+  for(let x=0;x<w;x++){
+    const a=Math.floor((t0+x/w*(t1-t0))*50),b=Math.max(a+1,Math.floor((t0+(x+1)/w*(t1-t0))*50));
+    let mx=0;for(let i=a;i<b&&i<pk.length;i++)if(pk[i]>mx)mx=pk[i];
+    const v=mx/255*hh;g.fillRect(x,hh-v,1,v)}
+}
+function renderTimeline(){
+  const tin=$('#tlin'),W=Math.max(total()+12,30)*zoom;
+  tin.style.width=Math.max(W,$('#tl').clientWidth)+'px';
+  // ruler
+  const ru=$('#ruler');ru.innerHTML='';
+  const steps=[.1,.2,.5,1,2,5,10,15,30,60,120,300,600,1200,1800];
+  const st=steps.find(s=>s*zoom>=70)||1800;
+  for(let t=0;t*zoom<parseFloat(tin.style.width);t+=st){const k=h('div','tk',fmt(t).replace(/\.00$/,''));k.style.left=t*zoom+'px';ru.append(k)}
+  const rows=$('#rows');rows.innerHTML='';
+  // video row
+  const vr=h('div','row');const lane=h('div','lane');vr.append(lane);
+  if(!LY.length){const e=h('div','hint','영상 트랙 — 왼쪽 미디어에서 ＋ 또는 더블클릭으로 컷을 추가하세요');e.style.cssText='position:absolute;left:12px;top:18px';lane.append(e)}
+  LY.forEach((o,i)=>{
+    const c=o.c,m=media(c.mid);
+    const el=h('div','clip'+(sel&&sel.id===c.id?' sel':''));el.dataset.id=c.id;el.dataset.i=i;
+    el.style.left=o.start*zoom+'px';el.style.width=Math.max(4,o.len*zoom)+'px';
+    if(m&&m.kind==='video')el.style.backgroundImage=`url(/thumb/${m.id})`;
+    const cv=h('canvas');cv.width=clamp(Math.ceil(o.len*zoom),4,3000);cv.height=30;el.append(cv);
+    drawWave(cv,c.mid,c.in,c.out,'rgba(255,255,255,.8)');
+    el.append(h('div','lb',(m?m.name:'?')+(c.speed!==1?`  ×${r2(c.speed)}`:'')+(c.mute?'  🔇':'')));
+    el.append(h('div','hl'),h('div','hr'));lane.append(el)});
+  rows.append(vr);
+  // audio rows
+  P.tracks.forEach(t=>{
+    const m=media(t.mid),r=h('div','row arow'),ln=h('div','lane');r.append(ln);
+    const el=h('div','atr'+(sel&&sel.id===t.id?' sel':''));el.dataset.id=t.id;
+    el.style.left=t.start*zoom+'px';el.style.width=Math.max(4,t.dur*zoom)+'px';
+    const cv=h('canvas');cv.width=clamp(Math.ceil(t.dur*zoom),4,3000);cv.height=30;el.append(cv);
+    const seg=Math.max(.05,t.out-t.in);
+    if(t.loop&&t.dur>seg){const reps=Math.ceil(t.dur/seg),pw=cv.width/(t.dur/seg);const g=cv.getContext('2d');
+      const tmp=h('canvas');tmp.width=Math.max(1,Math.ceil(pw));tmp.height=30;drawWave(tmp,t.mid,t.in,t.out,'rgba(255,255,255,.8)');
+      for(let k=0;k<reps;k++)g.drawImage(tmp,k*pw,0)}
+    else drawWave(cv,t.mid,t.in,Math.min(t.out,t.in+t.dur),'rgba(255,255,255,.8)');
+    el.append(h('div','lb','🎵 '+(m?m.name:'?')+(t.loop?'  🔁':'')+(t.mute?'  🔇':'')));
+    el.append(h('div','hl'),h('div','hr'));ln.append(el);rows.append(r)});
+  if(!P.tracks.length){const r=h('div','row arow');const e=h('div','hint','음악/음성 트랙 — 🎵 음악 추가 버튼 또는 오디오 파일의 ＋');e.style.cssText='position:absolute;left:12px;top:10px';r.append(e);rows.append(r)}
+  updHead();
+}
+function tAt(e){return(e.clientX-$('#tlin').getBoundingClientRect().left)/zoom}
+(function(){
+  const tl=$('#tl');let drag=null;
+  tl.addEventListener('mousemove',e=>{
+    const bl=$('#bladeLine');
+    if(blade){bl.style.display='block';bl.style.left=(e.clientX-$('#tlin').getBoundingClientRect().left)+'px'}else bl.style.display='none'});
+  tl.addEventListener('mouseleave',()=>$('#bladeLine').style.display='none');
+  tl.addEventListener('pointerdown',e=>{
+    if(e.button!==0)return;
+    focusArea='tl';
+    const ru=e.target.closest('#ruler'),clipEl=e.target.closest('.clip'),atrEl=e.target.closest('.atr');
+    if(ru||(!clipEl&&!atrEl)){
+      if(!ru){sel=null;buildInspector();renderTimeline()}
+      pause();seekTo(Math.max(0,tAt(e)));
+      drag={kind:'scrub'};tl.setPointerCapture(e.pointerId);return}
+    if(clipEl){
+      const c=clipOf(clipEl.dataset.id),i=+clipEl.dataset.i,o=LY[i];
+      if(blade&&!e.target.classList.contains('hl')&&!e.target.classList.contains('hr')){splitAt(tAt(e));return}
+      sel={type:'clip',id:c.id};buildInspector();
+      const hit=e.target.classList.contains('hl')?'l':e.target.classList.contains('hr')?'r':'b';
+      if(!playing)seekTo(clamp(tAt(e),o.start,o.end-1e-4));
+      snap();
+      drag={kind:'clip',hit,c,i,o,x:e.clientX,in0:c.in,out0:c.out,moved:false,m:media(c.mid)};
+      tl.setPointerCapture(e.pointerId);renderTimeline();return}
+    if(atrEl){
+      const t=trackOf(atrEl.dataset.id);
+      sel={type:'track',id:t.id};buildInspector();
+      const hit=e.target.classList.contains('hl')?'l':e.target.classList.contains('hr')?'r':'b';
+      snap();
+      drag={kind:'track',hit,t,x:e.clientX,s0:t.start,in0:t.in,out0:t.out,d0:t.dur,m:media(t.mid)};
+      tl.setPointerCapture(e.pointerId);renderTimeline()}
+  });
+  tl.addEventListener('pointermove',e=>{
+    if(!drag)return;
+    if(drag.kind==='scrub'){seekTo(Math.max(0,tAt(e)));return}
+    const dx=(e.clientX-drag.x)/zoom;
+    if(drag.kind==='clip'){
+      const c=drag.c,sp=c.speed,md=drag.m.duration;
+      if(drag.hit==='l'){c.in=r2(clamp(drag.in0+dx*sp,0,drag.out0-0.1*sp)*100)/100;changed({vis:1,drag:1});seekTo(drag.o.start)}
+      else if(drag.hit==='r'){c.out=r2(clamp(drag.out0+dx*sp,drag.in0+0.1*sp,md)*100)/100;changed({vis:1,drag:1});seekTo(Math.min(T,total()))}
+      else{
+        if(Math.abs(e.clientX-drag.x)>5)drag.moved=true;
+        if(drag.moved){
+          const el=$(`.clip[data-id="${c.id}"]`);el.style.transform=`translateX(${e.clientX-drag.x}px)`;el.style.opacity=.7;el.style.zIndex=9;
+          const center=drag.o.start+drag.o.len/2+dx;
+          let tgt=0;LY.forEach((o,j)=>{if(j!==drag.i&&o.start+o.len/2<center)tgt++});
+          drag.tgt=tgt;
+          let acc=0,k=0;for(const o of LY){if(o===drag.o)continue;if(k===tgt)break;acc+=o.len;k++}
+          const dl=$('#dropLine');dl.style.display='block';dl.style.left=acc*zoom-1+'px';dl.style.top='24px'}}
+    }else{
+      const t=drag.t;
+      if(drag.hit==='b'){
+        let s=Math.max(0,drag.s0+dx);
+        for(const snapT of[0,T,total()])if(Math.abs((s-snapT)*zoom)<8)s=snapT;
+        t.start=r2(s*100)/100}
+      else if(drag.hit==='l'){
+        const d=clamp(dx,-Math.min(drag.in0,drag.s0),drag.d0-0.1);
+        t.in=r2((drag.in0+d)*100)/100;t.start=r2((drag.s0+d)*100)/100;t.dur=r2((drag.d0-d)*100)/100}
+      else{
+        if(t.loop)t.dur=r2(Math.max(0.1,drag.d0+dx)*100)/100;
+        else{const out=clamp(drag.out0+dx,t.in+0.1,drag.m.duration);t.out=r2(out*100)/100;t.dur=r2((t.out-t.in)*100)/100}}
+      changed({vis:1,drag:1});
+    }
+  });
+  const end=e=>{
+    if(!drag)return;const d=drag;drag=null;$('#dropLine').style.display='none';
+    if(d.kind==='clip'&&d.hit==='b'&&d.moved&&d.tgt!=null&&d.tgt!==d.i){
+      const [c]=P.clips.splice(d.i,1);P.clips.splice(d.tgt,0,c);changed({struct:1})}
+    else if(d.kind==='clip'&&d.hit==='b'){renderTimeline()}
+    else if(d.kind!=='scrub')changed({struct:1});
+  };
+  tl.addEventListener('pointerup',end);tl.addEventListener('pointercancel',end);
+})();
+
+/* ================= inspector ================= */
+let ctrls=[];
+const reg=f=>{ctrls.push(f)};
+function refreshInspector(){ctrls.forEach(f=>f())}
+function frow(label,...els){const d=h('div','fr');if(label)d.append(h('label',null,label));d.append(...els);return d}
+function btn(label,fn,cls,title){const b=h('button',cls||'',label);b.onclick=fn;if(title)b.title=title;return b}
+function card(title){const c=h('div','card');c.append(h('h3',null,title));return c}
+function slider(label,get,set,o){
+  const r=h('input');r.type='range';r.min=o.min;r.max=o.max;r.step=o.step;
+  const n=h('input','num');n.type='number';n.min=o.dmin!=null?o.dmin:o.min;n.max=o.dmax!=null?o.dmax:o.max;n.step=o.nstep||o.step;
+  const to=o.to||(v=>v),from=o.from||(v=>v);
+  r.oninput=()=>edit(()=>set(from(+r.value)),label,{vis:o.vis});
+  n.onchange=()=>{const v=clamp(+n.value,+n.min,+n.max);if(!isNaN(v))edit(()=>set(from(v)),label+'n',{vis:o.vis,struct:o.struct})};
+  reg(()=>{const v=to(get());if(document.activeElement!==r)r.value=v;if(document.activeElement!==n)n.value=r2(o.disp?o.disp(get()):v)});
+  const els=[r,n];if(o.unit)els.push(h('span','hint',o.unit));
+  return frow(label,...els)
+}
+function timeField(label,get,set,key){
+  const i=h('input');i.type='text';
+  i.onchange=()=>{const v=parseT(i.value);if(isNaN(v)){refreshInspector();return toast('시간 형식: 12.5 또는 1:23.4')}edit(()=>set(v),key,{struct:0})};
+  i.onkeydown=e=>{if(e.key==='Enter')i.blur()};
+  reg(()=>{if(document.activeElement!==i)i.value=fmt(get())});
+  return[i]
+}
+function ratioBtns(){
+  const g=h('div','grp');
+  [['orig','원본'],['16:9','16:9'],['9:16','9:16'],['1:1','1:1'],['4:3','4:3']].forEach(([v,l])=>{
+    const b=btn(l,()=>edit(()=>P.settings.ratio=v,null,{struct:0,vis:0}));reg(()=>b.classList.toggle('on',P.settings.ratio===v));g.append(b)});
+  return g
+}
+function buildInspector(){
+  ctrls=[];const R=$('#right');R.innerHTML='';
+  // ---- project
+  let c=card('프로젝트 · 화면');
+  c.append(frow('화면 비율',ratioBtns()));
+  const fg=h('div','grp');
+  [['contain','전체 보기'],['cover','화면 채우기']].forEach(([v,l])=>{const b=btn(l,()=>edit(()=>P.settings.fit=v,null,{vis:1}));reg(()=>b.classList.toggle('on',P.settings.fit===v));fg.append(b)});
+  c.append(frow('맞춤',fg));
+  const sz=h('select');[[480,'480p'],[720,'720p (HD)'],[1080,'1080p (FHD)']].forEach(([v,l])=>{const op=h('option',null,l);op.value=v;sz.append(op)});
+  sz.onchange=()=>edit(()=>P.settings.short=+sz.value,null,{vis:0});
+  const szl=h('span','hint');
+  reg(()=>{sz.value=P.settings.short;const{W,H}=outSize();szl.textContent=`${W} × ${H} px`});
+  c.append(frow('출력 크기',sz,szl));
+  R.append(c);
+  c=card('프로젝트 · 원본 영상 소리');
+  c.append(slider('전체 음량',()=>P.settings.origVol,v=>P.settings.origVol=v,{min:0,max:2,step:.01,to:v=>v,disp:v=>v*100,dmin:0,dmax:200,nstep:1,from:v=>v,unit:'%'}));
+  // number input in percent: handle conversion
+  const lastRow=c.lastChild;const nn=lastRow.querySelector('input.num'),rr=lastRow.querySelector('input[type=range]');
+  nn.onchange=()=>{const v=clamp(+nn.value,0,200)/100;edit(()=>P.settings.origVol=v,'ovn')};
+  const sy=h('input','num');sy.type='number';sy.step=10;
+  sy.onchange=()=>edit(()=>P.settings.syncMs=clamp(Math.round(+sy.value)||0,-5000,5000),'syn');
+  reg(()=>{if(document.activeElement!==sy)sy.value=P.settings.syncMs});
+  c.append(frow('음성 싱크',btn('−50',()=>edit(()=>P.settings.syncMs=clamp(P.settings.syncMs-50,-5000,5000),'sy')),sy,btn('＋50',()=>edit(()=>P.settings.syncMs=clamp(P.settings.syncMs+50,-5000,5000),'sy')),h('span','hint','ms')));
+  c.append(h('div','hint','＋ = 소리를 늦춤, − = 소리를 앞당김 (내보내기에 반영)'));
+  R.append(c);
+  // ---- selection
+  const it=findSel();
+  if(sel&&it&&sel.type==='clip')buildClip(R,it);
+  else if(sel&&it&&sel.type==='track')buildTrack(R,it);
+  else{const e=card('편집');e.append(h('div','hint','타임라인에서 컷이나 음악을 선택하면 여기에서 편집할 수 있습니다.\n미리보기 화면을 드래그하면 영상 위치가 움직이고, 마우스 휠로 확대/축소됩니다.'));R.append(e)}
+  refreshInspector();
+}
+function buildClip(R,c){
+  const m=media(c.mid);const sp=()=>c.speed;
+  let k=card('컷 편집 · '+(m?m.name:''));
+  const inF=timeField('시작',()=>c.in,v=>{c.in=r2(clamp(v,0,c.out-0.1*c.speed)*100)/100},'cin'),
+        outF=timeField('끝',()=>c.out,v=>{c.out=r2(clamp(v,c.in+0.1*c.speed,m.duration)*100)/100},'cout');
+  k.append(frow('시작(원본)',...inF),frow('끝(원본)',...outF));
+  const lenS=h('span','hint');reg(()=>lenS.textContent=fmt((c.out-c.in)/c.speed)+' (원본 '+fmt(m.duration)+')');
+  k.append(frow('길이',lenS));
+  k.append(slider('속도',()=>c.speed,v=>c.speed=clamp(r2(v*100)/100,.25,4),{min:-2,max:2,step:.01,to:v=>Math.log2(v),from:v=>Math.pow(2,v),disp:v=>v,dmin:.25,dmax:4,nstep:.05,unit:'배',struct:0}));
+  // numeric box must be raw speed, not log: override
+  const sr=k.lastChild,sn=sr.querySelector('input.num');
+  sn.onchange=()=>{const v=clamp(+sn.value,.25,4);if(!isNaN(v))edit(()=>c.speed=r2(v*100)/100,'spn')};
+  const pg=h('div','grp');[.25,.5,1,1.5,2,4].forEach(v=>pg.append(btn('×'+v,()=>edit(()=>c.speed=v,null))));
+  k.append(frow('',pg));
+  const og=h('div','grp');
+  og.append(btn('◀ 앞으로',()=>moveSel(-1)),btn('뒤로 ▶',()=>moveSel(1)),btn('⧉ 복제',dupSel),btn('✂ 여기서 분할',()=>splitAt(T)),btn('🗑 삭제',delSel,'dng'));
+  k.append(frow('',og));R.append(k);
+
+  k=card('화면 · 크기 / 위치');
+  k.append(slider('확대/축소',()=>c.scale*100,v=>c.scale=clamp(r2(v)/100,1,4),{min:100,max:400,step:1,unit:'%',vis:1}));
+  const zr=k.lastChild;
+  const zb=h('div','grp');zb.append(btn('−10%',()=>edit(()=>c.scale=clamp(r2(c.scale-.1),1,4),'zb',{vis:1})),btn('＋10%',()=>edit(()=>c.scale=clamp(r2(c.scale+.1),1,4),'zb',{vis:1})),btn('100%',()=>edit(()=>c.scale=1,null,{vis:1})),btn('200%',()=>edit(()=>c.scale=2,null,{vis:1})));
+  k.append(frow('',zb));
+  const mkPos=(l,key)=>{const i=h('input','num');i.type='number';i.step=1;i.onchange=()=>edit(()=>c[key]=clamp(+i.value,-200,200)/100,'pos'+key,{vis:1});reg(()=>{if(document.activeElement!==i)i.value=r2(c[key]*100)});return i};
+  k.append(frow('위치 X / Y',mkPos('X','x'),mkPos('Y','y'),h('span','hint','%')));
+  const pb=h('div','grp');
+  pb.append(btn('⊕ 가운데 정렬',()=>edit(()=>{c.x=0;c.y=0},null,{vis:1})),btn('↺ 크기/위치 초기화',()=>edit(()=>{c.scale=1;c.x=0;c.y=0;c.rot=0;c.flip=false},null,{vis:1})));
+  k.append(frow('',pb));
+  const rb=h('div','grp');
+  rb.append(btn('⟲ 왼쪽 90°',()=>edit(()=>c.rot=(c.rot+270)%360,null,{vis:0})),btn('⟳ 오른쪽 90°',()=>edit(()=>c.rot=(c.rot+90)%360,null,{vis:0})),
+    (()=>{const b=btn('⇋ 좌우 반전',()=>edit(()=>c.flip=!c.flip,null,{vis:1}));reg(()=>b.classList.toggle('on',!!c.flip));return b})());
+  k.append(frow('회전/반전',rb));
+  k.append(frow('',btn('모든 컷에 같은 크기/위치 적용',()=>edit(()=>P.clips.forEach(x=>{x.scale=c.scale;x.x=c.x;x.y=c.y;x.rot=c.rot;x.flip=c.flip}),null,{vis:0}))));
+  R.append(k);
+
+  k=card('소리 · 이 컷');
+  k.append(slider('음량',()=>c.vol*100,v=>c.vol=r2(v)/100,{min:0,max:200,step:1,unit:'%'}));
+  const mu=btn('🔇 음소거',()=>edit(()=>c.mute=!c.mute,null));reg(()=>mu.classList.toggle('on',!!c.mute));
+  k.append(frow('',mu));
+  const fi=h('input','num'),fo=h('input','num');fi.type=fo.type='number';fi.step=fo.step=.1;fi.min=fo.min=0;
+  fi.onchange=()=>edit(()=>c.fi=clamp(+fi.value||0,0,60),'fi');fo.onchange=()=>edit(()=>c.fo=clamp(+fo.value||0,0,60),'fo');
+  reg(()=>{if(document.activeElement!==fi)fi.value=c.fi;if(document.activeElement!==fo)fo.value=c.fo});
+  k.append(frow('페이드 인/아웃',fi,fo,h('span','hint','초')));
+  const mg=h('div','grp');
+  [['orig','원본 그대로'],['both','목소리+음악'],['vocals','목소리만'],['music','음악만']].forEach(([v,l])=>{
+    const b=btn(l,()=>setSepMode(c,v));reg(()=>b.classList.toggle('on',(c.sep?c.sep.mode:'orig')===v));mg.append(b)});
+  k.append(frow('소리 소스',mg));
+  if(!c.sep)c.sep={mode:'orig',v:1,m:1};
+  k.append(slider('목소리 음량',()=>c.sep.v*100,v=>c.sep.v=r2(v)/100,{min:0,max:200,step:1,unit:'%'}));
+  k.append(slider('배경음 음량',()=>c.sep.m*100,v=>c.sep.m=r2(v)/100,{min:0,max:200,step:1,unit:'%'}));
+  k.append(h('div','hint','목소리/배경음 소스는 [음성 분리] 탭에서 먼저 분리해야 사용할 수 있습니다.'));
+  R.append(k);
+}
+async function setSepMode(c,v){
+  if(v!=='orig'){
+    const m=media(c.mid);await refreshSep(m.id);
+    if(!sepInfo[m.id].done){toast('먼저 [음성 분리] 탭에서 분리를 실행하세요');selMedia=m.id;setTab('sep');return}
+  }
+  edit(()=>{if(!c.sep)c.sep={mode:'orig',v:1,m:1};c.sep.mode=v},null,{});
+}
+function buildTrack(R,t){
+  const m=media(t.mid);
+  let k=card('음악/음성 · '+(m?m.name:''));
+  k.append(frow('시작 위치',...timeField('',()=>t.start,v=>t.start=r2(Math.max(0,v)*100)/100,'tst')));
+  k.append(frow('원본 시작',...timeField('',()=>t.in,v=>{const d=clamp(v,0,t.out-0.1)-t.in;t.in+=d;if(!t.loop)t.dur=r2(t.out-t.in)},'tin')));
+  k.append(frow('원본 끝',...timeField('',()=>t.out,v=>{t.out=r2(clamp(v,t.in+0.1,m.duration)*100)/100;if(!t.loop||t.dur<t.out-t.in)t.dur=r2(t.out-t.in)},'tout')));
+  k.append(frow('재생 길이',...timeField('',()=>t.dur,v=>{t.dur=r2(Math.max(0.1,t.loop?v:Math.min(v,t.out-t.in))*100)/100},'tdur')));
+  const b=h('div','grp');b.append(btn('시작=재생 막대',()=>edit(()=>t.start=r2(T),null)),btn('−0.1초',()=>edit(()=>t.start=r2(Math.max(0,t.start-.1)),'tn')),btn('＋0.1초',()=>edit(()=>t.start=r2(t.start+.1),'tn')));
+  k.append(frow('시작 시크',b));
+  const lp=btn('🔁 반복 재생',()=>edit(()=>{t.loop=!t.loop;if(!t.loop)t.dur=Math.min(t.dur,t.out-t.in)},null));reg(()=>lp.classList.toggle('on',!!t.loop));
+  const mu=btn('🔇 음소거',()=>edit(()=>t.mute=!t.mute,null));reg(()=>mu.classList.toggle('on',!!t.mute));
+  k.append(frow('',lp,mu));
+  k.append(h('div','hint','반복 재생을 켜고 오른쪽 끝을 늘리면 구간이 반복됩니다.'));
+  k.append(slider('음량',()=>t.vol*100,v=>t.vol=r2(v)/100,{min:0,max:200,step:1,unit:'%'}));
+  const fi=h('input','num'),fo=h('input','num');fi.type=fo.type='number';fi.step=fo.step=.1;fi.min=fo.min=0;
+  fi.onchange=()=>edit(()=>t.fi=clamp(+fi.value||0,0,60),'tfi');fo.onchange=()=>edit(()=>t.fo=clamp(+fo.value||0,0,60),'tfo');
+  reg(()=>{if(document.activeElement!==fi)fi.value=t.fi;if(document.activeElement!==fo)fo.value=t.fo});
+  k.append(frow('페이드 인/아웃',fi,fo,h('span','hint','초')));
+  k.append(frow('',btn('⧉ 복제',dupSel),btn('🗑 삭제',delSel,'dng')));
+  R.append(k);
+}
+
+/* ================= tabs: subtitles / separation ================= */
+let curTab='media';
+function setTab(t){curTab=t;$$('.tabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+  ['media','subs','sep'].forEach(n=>$('#tab-'+n).hidden=n!==t);renderTabs()}
+$$('.tabs button').forEach(b=>b.onclick=()=>setTab(b.dataset.t));
+function renderTabs(){
+  if(curTab==='subs')renderSubs();else if(curTab==='sep')renderSep();else renderMedia()
+}
+const subJobs={};
+function startTranscribe(mid){
+  const m=media(mid);if(!m||subJobs[mid])return;
+  subJobs[mid]=1;
+  fetch('/api/transcribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mediaId:mid,lang:P.settings.lang,model:P.settings.model})})
+    .then(r=>r.json()).then(j=>{
+      const t=addTask('자막: '+m.name);
+      pollJob(j.id,t,'자막: '+m.name,res=>{
+        delete subJobs[mid];if(!media(mid))return;
+        snap();P.subs[mid]=res.subs;changed({struct:1,tabs:1});toast(`자막 생성 완료 (${res.subs.length}줄) · ${m.name}`)},()=>{delete subJobs[mid];curTab==='subs'&&renderSubs()})})
+    .catch(()=>{delete subJobs[mid];toast('자막 생성 요청 실패')})
+}
+async function dl(name,text){const b=new Blob([text],{type:'text/plain;charset=utf-8'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000)}
+async function srtText(subs){return await(await fetch('/api/srt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subs})})).text()}
+function renderSubs(){
+  const B=$('#tab-subs');B.innerHTML='';
+  const m=selMedia&&media(selMedia);
+  const c=card('음성 → 자막 (로컬 AI, 인터넷 불필요)');
+  const lang=h('select');[['','자동 감지'],['ko','한국어'],['en','English'],['ja','日本語'],['zh','中文'],['es','Español'],['fr','Français'],['de','Deutsch']].forEach(([v,l])=>{const o=h('option',null,l);o.value=v;lang.append(o)});
+  lang.value=P.settings.lang;lang.onchange=()=>{P.settings.lang=lang.value;save()};
+  const mod=h('select');[['tiny','tiny (가장 빠름)'],['base','base'],['small','small (권장)'],['medium','medium (정확·느림)']].forEach(([v,l])=>{const o=h('option',null,l);o.value=v;mod.append(o)});
+  mod.value=P.settings.model;mod.onchange=()=>{P.settings.model=mod.value;save()};
+  const auto=h('input');auto.type='checkbox';auto.checked=P.settings.autoSub;auto.onchange=()=>{P.settings.autoSub=auto.checked;save()};
+  const al=h('label');al.append(auto,' 파일을 가져오면 자동으로 자막 생성');
+  c.append(frow('언어',lang),frow('정확도',mod),al);
+  const burn=h('input');burn.type='checkbox';burn.checked=P.settings.burn;burn.onchange=()=>{P.settings.burn=burn.checked;save()};
+  const bl=h('label');bl.append(burn,' 내보내기 시 영상에 자막 입히기');c.append(h('div'),bl);
+  B.append(c);
+  if(!m){B.append(h('p','hint','미디어 탭에서 파일을 선택하세요.'));return}
+  const subs=P.subs[m.id];
+  const c2=card('선택: '+m.name);
+  const busy=!!subJobs[m.id];
+  const gb=btn(busy?'분석 중…':(subs?'다시 생성':'자막 생성'),()=>startTranscribe(m.id),'pri');gb.disabled=busy||!m.hasAudio;
+  c2.append(frow('',gb));if(!m.hasAudio)c2.append(h('div','hint','오디오가 없는 파일입니다.'));
+  if(subs){
+    c2.append(frow('',btn('💾 SRT 저장 (원본 기준)',async()=>dl((m.name.replace(/\.[^.]+$/,''))+'.srt',await srtText(subs))),
+      btn('💾 타임라인 SRT',async()=>{const s=timelineSubs();if(!s.length)return toast('타임라인에 자막이 없습니다');dl('timeline.srt',await srtText(s))})));
+    c2.append(h('div','hint','자막은 미리보기 화면에 표시됩니다. 문장을 눌러 수정하세요.'));
+    subs.forEach((s,i)=>{
+      const r=h('div','sub');const a=h('input','tm');a.value=fmt(s.s);const b=h('input','tm');b.value=fmt(s.e);const t=h('input','t');t.value=s.t;
+      a.onchange=()=>{const v=parseT(a.value);if(!isNaN(v))edit(()=>s.s=r2(v),null,{vis:1,tabs:0})};
+      b.onchange=()=>{const v=parseT(b.value);if(!isNaN(v))edit(()=>s.e=r2(v),null,{vis:1})};
+      t.onchange=()=>edit(()=>s.t=t.value,null,{vis:1});
+      const x=btn('✕',()=>edit(()=>subs.splice(i,1),null,{vis:1,tabs:1}));x.style.padding='2px 6px';
+      r.append(a,b,t,x);
+      t.onfocus=()=>{const o=LY.find(o=>o.c.mid===m.id&&s.s<o.c.out&&s.e>o.c.in);if(o)seekTo(o.start+(Math.max(s.s,o.c.in)-o.c.in)/o.c.speed)};
+      c2.append(r)})
+  }
+  B.append(c2)
+}
+async function refreshSep(mid){
+  try{const d=await(await fetch('/api/sep/'+mid)).json();sepInfo[mid]=d}catch(e){sepInfo[mid]={done:false}}
+}
+const sepJobs={};
+function renderSep(){
+  const B=$('#tab-sep');B.innerHTML='';
+  const m=selMedia&&media(selMedia);
+  const c=card('목소리 / 배경음악 분리 (로컬 AI · API 없음)');
+  c.append(h('div','hint','현재 CPU로 처리하며, 원본 길이 30분 이하를 대상으로 합니다. 처음 한 번은 AI 모델을 내려받습니다. 같은 파일은 기존 분리 결과를 재사용합니다.'));
+  B.append(c);
+  if(!m||!m.hasAudio){B.append(h('p','hint','미디어 탭에서 오디오가 있는 파일을 선택하세요.'));return}
+  if(!sepInfo[m.id]){refreshSep(m.id).then(()=>curTab==='sep'&&renderSep());B.append(h('p','hint','확인 중…'));return}
+  const info=sepInfo[m.id],c2=card('선택: '+m.name);
+  if(m.duration>1805)c2.append(h('div','hint','⚠ 30분을 넘어 분리할 수 없습니다.'));
+  if(sepJobs[m.id]){c2.append(h('div','hint','분리 중… 상단 진행률을 확인하세요. CPU 처리라 시간이 걸립니다.'))}
+  else if(!info.done){
+    const b=btn('🎙 목소리/배경음 분리 시작',()=>startSep(m),'pri');b.disabled=m.duration>1805;c2.append(frow('',b))}
+  else{
+    c2.append(h('div','hint','✓ 분리 완료 (재사용됨)'));
+    const v=sepVol[m.id]||(sepVol[m.id]={v:1,m:1});
+    const mkStem=(label,file,key)=>{
+      const s=h('div','stem');s.append(h('b',null,label));
+      const au=h('audio');au.controls=true;au.src=`/sep/${info.hash}/${file}`;au.volume=Math.min(1,v[key]);s.append(au);
+      const sl=h('input');sl.type='range';sl.min=0;sl.max=200;sl.value=v[key]*100;
+      const nl=h('span','hint',Math.round(v[key]*100)+'%');
+      sl.oninput=()=>{v[key]=sl.value/100;au.volume=Math.min(1,v[key]);nl.textContent=sl.value+'%'};
+      s.append(frow('음량',sl,nl));
+      const a=h('a');a.href=`/sep/${info.hash}/${file}?dl=1&name=${encodeURIComponent(m.name.replace(/\.[^.]+$/,'')+'_'+(key==='v'?'vocals':'music')+'.wav')}`;
+      a.append(btn('💾 WAV 저장'));s.append(a);return s};
+    c2.append(mkStem('🎤 목소리','vocals.wav','v'),mkStem('🎼 배경음악','music.wav','m'));
+    const ap=card('선택한 컷에 적용');
+    const cl=sel&&sel.type==='clip'&&clipOf(sel.id);
+    ap.append(h('div','hint',cl&&cl.mid===m.id?'선택된 컷: '+fmt(cl.in)+' ~ '+fmt(cl.out):'타임라인에서 이 파일의 컷을 선택하세요.'));
+    const g=h('div','grp');
+    [['both','둘 다 (위 음량)'],['vocals','목소리만 남기기'],['music','음악만 남기기']].forEach(([mode,l])=>{
+      const b=btn(l,()=>{const c=sel&&sel.type==='clip'&&clipOf(sel.id);if(!c||c.mid!==m.id)return toast('이 파일의 컷을 먼저 선택하세요');
+        edit(()=>{c.sep={mode,v:v.v,m:v.m}},null,{struct:1});toast('적용했습니다: '+l)});g.append(b)});
+    g.append(btn('원래대로',()=>{const c=sel&&sel.type==='clip'&&clipOf(sel.id);if(!c)return toast('컷을 선택하세요');edit(()=>{c.sep={mode:'orig',v:1,m:1}},null,{struct:1})}));
+    ap.append(g);
+    ap.append(frow('',btn('이 파일의 모든 컷에 적용',()=>edit(()=>P.clips.forEach(c=>{if(c.mid===m.id)c.sep={mode:'both',v:v.v,m:v.m}}),null,{struct:1}))));
+    c2.append(ap)}
+  B.append(c2)
+}
+function startSep(m){
+  sepJobs[m.id]=1;renderSep();
+  fetch('/api/separate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mediaId:m.id})})
+    .then(r=>r.json()).then(j=>{
+      if(j.error){delete sepJobs[m.id];toast(j.error);renderSep();return}
+      const t=addTask('음성 분리: '+m.name);
+      const iv=setInterval(async()=>{
+        let s;try{s=await(await fetch('/api/jobs/'+j.id)).json()}catch(e){return}
+        t.set(s.progress||0,'음성 분리: '+m.name+(s.msg?' · '+s.msg:''));
+        if(s.state!=='running'){clearInterval(iv);t.done();delete sepJobs[m.id];
+          if(s.state==='error')toast('분리 실패: '+s.msg);else toast('분리 완료');
+          refreshSep(m.id).then(()=>curTab==='sep'&&renderSep())}},1000)})
+    .catch(()=>{delete sepJobs[m.id];toast('요청 실패');renderSep()})
+}
+
+/* ================= export ================= */
+function openExport(){
+  if(!P.clips.length)return toast('타임라인에 컷을 추가하세요');
+  const {W,H}=outSize(),B=$('#mbox');B.innerHTML='';
+  B.append(h('h3',null,'내보내기 (MP4)'));
+  B.append(h('div','hint',`${W} × ${H} px · 길이 ${fmt(total())}`));
+  const burn=h('input');burn.type='checkbox';burn.checked=P.settings.burn&&timelineSubs().length>0;
+  const bl=h('label');bl.append(burn,' 영상에 자막 입히기 (자막 '+timelineSubs().length+'줄)');
+  B.append(h('div','fr')).append(bl);
+  const pb=h('div','pbar'),pi=h('i');pb.append(pi);const msg=h('div','hint');
+  const go=btn('내보내기 시작',null,'pri'),cl=btn('닫기',()=>$('#modal').style.display='none');
+  const row=h('div','fr');row.append(go,cl);B.append(pb,msg,row);
+  go.onclick=async()=>{
+    go.disabled=true;P.settings.burn=burn.checked;
+    const proj={settings:{...P.settings,...outSize()},clips:P.clips,tracks:P.tracks,subs:timelineSubs()};
+    const j=await(await fetch('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project:proj,burn:burn.checked})})).json();
+    const iv=setInterval(async()=>{
+      const s=await(await fetch('/api/jobs/'+j.id)).json();
+      pi.style.width=Math.round(s.progress*100)+'%';msg.textContent=(s.msg||'')+' '+Math.round(s.progress*100)+'%';
+      if(s.state==='done'){clearInterval(iv);msg.textContent='완료!';const a=h('a');a.href='/exports/'+s.result.file+'?dl=1';a.append(btn('⬇ 파일 저장 ('+(s.result.size/1048576).toFixed(1)+' MB)',null,'pri'));row.prepend(a);
+        const op=h('a');op.href='/exports/'+s.result.file;op.target='_blank';op.append(btn('▶ 열기'));row.prepend(op);go.disabled=false;go.textContent='다시 내보내기'}
+      else if(s.state==='error'){clearInterval(iv);msg.style.color='var(--danger)';msg.textContent=s.msg;go.disabled=false}
+    },900)};
+  $('#modal').style.display='flex';
+}
+
+/* ================= wiring ================= */
+$('#bUndo').onclick=undo;$('#bRedo').onclick=redo;$('#bExport').onclick=openExport;
+$('#modal').onclick=e=>{if(e.target.id==='modal')$('#modal').style.display='none'};
+$('#bAdd').onclick=()=>$('#file').click();$('#drop').onclick=()=>$('#file').click();
+$('#file').onchange=e=>{uploadFiles(e.target.files);e.target.value=''};
+$('#bMusic').onclick=()=>$('#fileMusic').click();
+$('#fileMusic').onchange=e=>{
+  const fs=[...e.target.files];e.target.value='';if(!fs.length)return;
+  const before=new Set(P.media.map(m=>m.id));
+  uploadFiles(fs);
+  const iv=setInterval(()=>{const nm=P.media.filter(m=>!before.has(m.id));if(nm.length>=fs.length){clearInterval(iv);nm.forEach(m=>{if(m.hasAudio){const tr={id:uid(),mid:m.id,start:r2(T),in:0,out:m.duration,dur:m.duration,vol:1,mute:false,loop:false,fi:0,fo:0};edit(()=>{P.tracks.push(tr);sel={type:'track',id:tr.id}},null,{struct:1})}})}},600);
+};
+$('#bClean').onclick=cleanUnused;
+$('#bPlay').onclick=togglePlay;
+$('#bHome').onclick=()=>{pause();seekTo(0);$('#tl').scrollLeft=0};
+$('#bEnd').onclick=()=>{pause();seekTo(total()-1e-4)};
+$('#bFb').onclick=()=>step(-1);$('#bFf').onclick=()=>step(1);
+$('#bSplit').onclick=()=>splitAt(T);
+$('#bBlade').onclick=()=>{blade=!blade;$('#bBlade').classList.toggle('on',blade);$('#tl').style.cursor=blade?'crosshair':'';$$('.clip').forEach(c=>c.style.cursor=blade?'crosshair':'')};
+$('#bDel').onclick=delSel;$('#bDup').onclick=dupSel;$('#bLeft').onclick=()=>moveSel(-1);$('#bRight').onclick=()=>moveSel(1);
+function setZoom(z){const tl=$('#tl'),c=T*zoom-tl.scrollLeft;zoom=clamp(z,3,300);$('#zoom').value=zoom;renderTimeline();tl.scrollLeft=Math.max(0,T*zoom-c)}
+$('#zoom').oninput=e=>setZoom(+e.target.value);$('#zIn').onclick=()=>setZoom(zoom*1.4);$('#zOut').onclick=()=>setZoom(zoom/1.4);
+$('#zFit').onclick=()=>setZoom(($('#tl').clientWidth-40)/Math.max(total()+2,5));
+$('#tl').addEventListener('wheel',e=>{if(e.ctrlKey){e.preventDefault();setZoom(zoom*(e.deltaY<0?1.15:1/1.15))}},{passive:false});
+// drag & drop files
+let dc=0;
+addEventListener('dragenter',e=>{if(e.dataTransfer.types.includes('Files')){dc++;$('#dropAll').style.display='flex'}});
+addEventListener('dragleave',()=>{if(--dc<=0){dc=0;$('#dropAll').style.display='none'}});
+addEventListener('dragover',e=>e.preventDefault());
+addEventListener('drop',e=>{e.preventDefault();dc=0;$('#dropAll').style.display='none';if(e.dataTransfer.files.length){setTab('media');uploadFiles(e.dataTransfer.files)}});
+// keyboard
+addEventListener('keydown',e=>{
+  const tg=e.target.tagName;if(tg==='INPUT'&&e.target.type!=='range'&&e.target.type!=='checkbox'||tg==='SELECT'||tg==='TEXTAREA')return;
+  const k=e.key,ctl=e.ctrlKey||e.metaKey;
+  if(ctl&&k.toLowerCase()==='z'){e.preventDefault();e.shiftKey?redo():undo()}
+  else if(ctl&&k.toLowerCase()==='y'){e.preventDefault();redo()}
+  else if(k===' '){e.preventDefault();togglePlay()}
+  else if(k.toLowerCase()==='s'&&!ctl){e.preventDefault();splitAt(T)}
+  else if(k.toLowerCase()==='b'&&!ctl){$('#bBlade').click()}
+  else if(k==='Delete'||k==='Backspace'){e.preventDefault();
+    if(focusArea==='media'&&selMedia)removeMedia(selMedia);else delSel()}
+  else if(k==='ArrowLeft'){e.preventDefault();step(e.shiftKey?-10:-1)}
+  else if(k==='ArrowRight'){e.preventDefault();step(e.shiftKey?10:1)}
+  else if(k==='Home'){$('#bHome').click()}else if(k==='End'){$('#bEnd').click()}
+});
+$('#left').addEventListener('pointerdown',()=>focusArea='media');
+$('#right').addEventListener('pointerdown',()=>{});
+new ResizeObserver(()=>{layoutFrame();applyVisual()}).observe($('#stage'));
+
+/* ================= boot ================= */
+(async function(){
+  try{const d=await(await fetch('/api/project')).json();if(d){P=Object.assign(blank(),d);P.settings=Object.assign(blank().settings,d.settings||{})}}catch(e){}
+  P.clips.forEach(c=>{if(!c.sep)c.sep={mode:'orig',v:1,m:1}});
+  selMedia=P.media.length?P.media[0].id:null;
+  LY=layout();renderMedia();buildInspector();renderTimeline();layoutFrame();seekTo(0);updUndo();
+  requestAnimationFrame(tick)
+})();
+</script>
+</body>
+</html>
