@@ -135,17 +135,7 @@ COMPAT_V = {'h264', 'vp8', 'vp9', 'av1'}
 COMPAT_A = {'aac', 'mp3', 'opus', 'vorbis', 'flac', 'pcm_s16le', 'pcm_s24le', 'pcm_f32le', 'pcm_u8'}
 
 
-@app.route('/api/upload', methods=['POST'])
-def upload():
-    f = request.files.get('file')
-    if not f:
-        return jsonify(error='파일 없음'), 400
-    mid = uuid.uuid4().hex[:12]
-    ext = os.path.splitext(f.filename or '')[1].lower()
-    if not re.fullmatch(r'\.[a-z0-9]{1,6}', ext):
-        ext = '.bin'
-    path = os.path.join(MEDIA, mid + ext)
-    f.save(path)
+def register_media(path, mid, ext, filename):
     h = hashlib.sha1()
     with open(path, 'rb') as fh:
         while True:
@@ -156,8 +146,8 @@ def upload():
     info = probe(path)
     if not info['hasVideo'] and not info['hasAudio']:
         os.remove(path)
-        return jsonify(error='지원하지 않는 파일입니다'), 400
-    m = dict(id=mid, name=f.filename, ext=ext, hash=h.hexdigest(), kind='video' if info['hasVideo'] else 'audio',
+        raise ValueError('지원하지 않는 파일입니다')
+    m = dict(id=mid, name=filename, ext=ext, hash=h.hexdigest(), kind='video' if info['hasVideo'] else 'audio',
              proxy=False, **info)
     # browsers cannot play everything -> make a light preview copy
     need = False
@@ -178,7 +168,24 @@ def upload():
         run([FFMPEG, '-y', '-v', 'error', '-ss', str(min(1.0, m['duration'] / 2)), '-i', path, '-frames:v', '1',
              '-vf', 'scale=-2:96', os.path.join(CACHE, mid + '.jpg')])
     save_meta(m)
-    return jsonify(m)
+    return m
+
+
+@app.route('/api/upload', methods=['POST'])
+def upload():
+    f = request.files.get('file')
+    if not f:
+        return jsonify(error='파일 없음'), 400
+    mid = uuid.uuid4().hex[:12]
+    ext = os.path.splitext(f.filename or '')[1].lower()
+    if not re.fullmatch(r'\.[a-z0-9]{1,6}', ext):
+        ext = '.bin'
+    path = os.path.join(MEDIA, mid + ext)
+    f.save(path)
+    try:
+        return jsonify(register_media(path, mid, ext, f.filename))
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
 
 
 @app.route('/media/<mid>')
@@ -251,7 +258,7 @@ def make_srt(subs):
     return '\n'.join(out)
 
 
-def run_transcribe(job, mid, lang, model_name):
+def run_transcribe(job, mid, lang, model_name, words=False):
     m = load_meta(mid)
     if not m['hasAudio']:
         raise RuntimeError('오디오가 없는 파일입니다')
@@ -267,7 +274,7 @@ def run_transcribe(job, mid, lang, model_name):
                                                cpu_threads=max(2, (os.cpu_count() or 4) - 1))
         model = _models[model_name]
         job['msg'] = '음성 분석 중…'
-        kw = dict(language=lang or None, beam_size=3, vad_filter=True)
+        kw = dict(language=lang or None, beam_size=3, vad_filter=True, word_timestamps=words)
         try:
             segs, info = model.transcribe(audio, **kw)
             it = iter(segs)
@@ -279,7 +286,10 @@ def run_transcribe(job, mid, lang, model_name):
         for sg in it:
             t = sg.text.strip()
             if t:
-                out.append(dict(s=round(sg.start, 2), e=round(sg.end, 2), t=t))
+                o = dict(s=round(sg.start, 2), e=round(sg.end, 2), t=t)
+                if words:
+                    o['w'] = [[round(w.start, 2), round(w.end, 2), w.word, round(w.probability, 2)] for w in (sg.words or [])]
+                out.append(o)
             job['progress'] = min(0.99, sg.end / max(dur, 0.1))
         base = os.path.splitext(m['name'] or mid)[0]
         with open(os.path.join(SUBS, f'{mid}_{re.sub(r"[^0-9A-Za-z가-힣._-]", "_", base)}.srt'), 'w', encoding='utf-8') as f:
@@ -533,6 +543,44 @@ def fades(vol, fi, fo, L):
     return f + f',volume={vol:.4f}'
 
 
+def ass_time(t):
+    cs = int(round(max(0, t) * 100))
+    return f'{cs // 360000}:{cs // 6000 % 60:02d}:{cs // 100 % 60:02d}.{cs % 100:02d}'
+
+
+def subtitles_filter(src, dst, W, H, S, subs, tmp):
+    """자막을 sub.ass(tmp)로 쓰고 이를 입히는 ffmpeg 필터 문자열을 돌려준다.
+    PlayRes를 영상 해상도(W x H)로 고정해 글자 크기·여백이 실제 픽셀 기준(화면 높이 대비 %)이 되게 한다.
+    S: subFont, subSize(높이 %), subBold, subStyle('outline' 외곽선 | 'box' 흰 바탕+검은 글씨), subBottom(아래 여백 높이 %)."""
+    fam = S.get('subFont') or 'Pretendard'
+    if fam not in FONT_FAMILIES:
+        fam = 'Pretendard'
+    fs = max(8, round(H * max(1.5, min(12.0, float(S.get('subSize', 3.5)))) / 100))
+    bold = -1 if S.get('subBold', True) else 0
+    mv = round(H * max(0.0, min(40.0, float(S.get('subBottom', 6.0)))) / 100)
+    if S.get('subStyle') == 'box':  # BorderStyle 3: 외곽선 색이 글자 뒤 상자 색이 된다
+        prim, outl, bs, ol = '&H00000000', '&H00FFFFFF', 3, max(2, round(fs * 0.22))
+    else:
+        prim, outl, bs, ol = '&H00FFFFFF', '&H00000000', 1, max(1, round(fs / 18))
+    lines = ['[Script Info]', 'ScriptType: v4.00+', f'PlayResX: {W}', f'PlayResY: {H}', 'WrapStyle: 2',
+             'ScaledBorderAndShadow: yes', '', '[V4+ Styles]',
+             'Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,'
+             'Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,'
+             'MarginV,Encoding',
+             f'Style: Default,{fam},{fs},{prim},&H000000FF,{outl},&H00000000,{bold},0,0,0,100,100,0,0,{bs},{ol},0,2,'
+             f'{round(W * 0.05)},{round(W * 0.05)},{mv},1', '', '[Events]',
+             'Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text']
+    for c in subs:
+        txt = str(c['t']).replace('\\', '/').replace('{', '(').replace('}', ')').replace('\r', '')
+        txt = '\\N'.join(x.strip() for x in txt.split('\n') if x.strip())
+        lines.append(f"Dialogue: 0,{ass_time(c['s'])},{ass_time(max(c['e'], c['s'] + 0.05))},Default,,0,0,0,,{txt}")
+    with open(os.path.join(tmp, 'sub.ass'), 'w', encoding='utf-8-sig') as f:
+        f.write('\n'.join(lines) + '\n')
+    bs_ = chr(92)
+    fdir = FONTS.replace(bs_, '/').replace(':', bs_ + ':')
+    return f"[{src}]ass=sub.ass:fontsdir='{fdir}'[{dst}]"
+
+
 def run_export(job, P, burn):
     S = P['settings']
     W, H = int(S['W']) // 2 * 2, int(S['H']) // 2 * 2
@@ -671,18 +719,7 @@ def run_export(job, P, burn):
         fc.append(f"[{vlabel}][stk{j}]overlay=x='{xe}':y={y0:.1f}:enable='between(t,{s0:.3f},{e0:.3f})'[vs{j}]")
         vlabel = f'vs{j}'
     if burn and P.get('subs'):
-        with open(os.path.join(tmp, 'sub.srt'), 'w', encoding='utf-8') as f:
-            f.write(make_srt(P['subs']))
-        fam = S.get('subFont') or 'Pretendard'
-        if fam not in FONT_FAMILIES:
-            fam = 'Pretendard'
-        fs = round(H * max(1.5, min(12.0, float(S.get('subSize', 3.5)))) / 100)
-        bold = 1 if S.get('subBold', True) else 0
-        bs = chr(92)
-        fdir = FONTS.replace(bs, '/').replace(':', bs + ':')
-        style = bs + ','
-        fc.append(f"[{vlabel}]subtitles=sub.srt:fontsdir='{fdir}':original_size={W}x{H}:"
-                  f"force_style='FontName={fam}{style}Bold={bold}{style}FontSize={fs}{style}Outline=2{style}Shadow=0{style}MarginV={round(H * 0.06)}'[vout]")
+        fc.append(subtitles_filter(vlabel, 'vout', W, H, S, P['subs'], tmp))
         vlabel = 'vout'
     script = os.path.join(tmp, 'graph.txt')
     with open(script, 'w', encoding='utf-8') as f:
