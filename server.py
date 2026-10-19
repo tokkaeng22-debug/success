@@ -258,7 +258,7 @@ def make_srt(subs):
     return '\n'.join(out)
 
 
-def run_transcribe(job, mid, lang, model_name):
+def run_transcribe(job, mid, lang, model_name, words=False):
     m = load_meta(mid)
     if not m['hasAudio']:
         raise RuntimeError('오디오가 없는 파일입니다')
@@ -274,7 +274,7 @@ def run_transcribe(job, mid, lang, model_name):
                                                cpu_threads=max(2, (os.cpu_count() or 4) - 1))
         model = _models[model_name]
         job['msg'] = '음성 분석 중…'
-        kw = dict(language=lang or None, beam_size=3, vad_filter=True)
+        kw = dict(language=lang or None, beam_size=3, vad_filter=True, word_timestamps=words)
         try:
             segs, info = model.transcribe(audio, **kw)
             it = iter(segs)
@@ -286,7 +286,10 @@ def run_transcribe(job, mid, lang, model_name):
         for sg in it:
             t = sg.text.strip()
             if t:
-                out.append(dict(s=round(sg.start, 2), e=round(sg.end, 2), t=t))
+                o = dict(s=round(sg.start, 2), e=round(sg.end, 2), t=t)
+                if words:
+                    o['w'] = [[round(w.start, 2), round(w.end, 2), w.word] for w in (sg.words or [])]
+                out.append(o)
             job['progress'] = min(0.99, sg.end / max(dur, 0.1))
         base = os.path.splitext(m['name'] or mid)[0]
         with open(os.path.join(SUBS, f'{mid}_{re.sub(r"[^0-9A-Za-z가-힣._-]", "_", base)}.srt'), 'w', encoding='utf-8') as f:

@@ -1,20 +1,21 @@
-"""구글 드라이브 폴더 자동 편집: 성경 말씀 구간 자막 + 무음 구간 컷 -> MP4.
+"""구글 드라이브 폴더 자동 편집: 설교 원고(docx) 맞춤 자막 + 무음 구간 컷 -> MP4.
 
 사용법
-  python autopipe.py --watch "G:\\내 드라이브\\설교"   # 폴더 감시 (Google Drive 데스크톱 동기화 폴더)
-  python autopipe.py --file 영상.mp4 --out 결과폴더      # 파일 1개 처리
+  python autopipe.py --watch "G:\\내 드라이브\\설교영상"   # 폴더 감시 (Google Drive 데스크톱 동기화 폴더)
+  python autopipe.py --file 영상.mp4 [--script 원고.docx]  # 파일 1개 처리
 
+영상과 같은 이름의 docx/txt(예: 0119설교.mp4 + 0119설교.docx)가 있으면 원고 글자로 자막을 만든다.
 감시 폴더에 새 영상이 올라오면 `<감시폴더>/output/` 에 아래 파일을 만든다.
-  <이름>_편집.mp4        무음 컷 + 말씀 구간 자막이 입혀진 영상
-  <이름>_말씀자막.srt    말씀 구간 자막 (컷 이후 타임라인 기준)
-  <이름>_리포트.txt      찾은 말씀·컷 통계 (검수용)
+  <이름>_편집.mp4     무음 컷 + 자막이 입혀진 영상
+  <이름>_자막.srt     자막 (컷 이후 타임라인 기준)
+  <이름>_리포트.txt   일치율·자막에서 빠진 원고 구간 (검수용)
 """
-import sys, os, re, json, time, argparse, shutil, subprocess, threading, uuid
+import sys, os, re, json, time, argparse, shutil, subprocess, threading, uuid, zipfile, html, difflib
 
 import numpy as np
 
 import server
-from server import FFMPEG, NOWIN, MEDIA, DATA, EXPORTS, make_srt, subtitles_filter, register_media, \
+from server import FFMPEG, NOWIN, MEDIA, DATA, CACHE, EXPORTS, make_srt, subtitles_filter, register_media, \
     decode_pcm, media_file, run_transcribe
 
 VIDEO_EXT = {'.mp4', '.mov', '.mkv', '.m4v', '.avi', '.webm', '.mts', '.m2ts'}
@@ -106,9 +107,242 @@ def chunk_sub(seg, maxc=22):
     return out
 
 
+# ---------------------------------------------------------------- 설교 원고(docx/txt) 맞춤 자막
+CPS = 0.18  # 한글 한 글자당 말하는 시간(초) 추정값. 맞춘 글자가 없는 부분의 시간 보정에만 쓴다.
+QUOTE_RE = re.compile(r'[“"]([^“”"]{6,}?)[”"]')
+SENT_END_RE = re.compile(r'[.?!。…][”"’\')\]]*$')
+
+
+def read_script(path):
+    """docx(또는 txt)에서 문단 목록을 읽는다. 표 안의 글도 포함."""
+    if path.lower().endswith('.docx'):
+        with zipfile.ZipFile(path) as z:
+            xml = z.read('word/document.xml').decode('utf-8')
+        paras = []
+        for p in xml.split('</w:p>'):
+            p = re.sub(r'<w:(?:tab|br)\b[^>]*/>', '<w:t> </w:t>', p)
+            t = ''.join(html.unescape(x) for x in re.findall(r'<w:t(?:\s[^>]*)?>([^<]*)</w:t>', p))
+            if t.strip():
+                paras.append(t.strip())
+        return paras
+    with open(path, encoding='utf-8-sig') as f:
+        return [ln.strip() for ln in f if ln.strip()]
+
+
+def script_words(paras):
+    """문단 -> [(단어, 문장끝 여부, 성경 인용 여부)]. 장절 언급 바로 뒤의 따옴표 인용을 성경 본문으로 본다."""
+    words = []
+    for para in paras:
+        spans = []
+        for m in QUOTE_RE.finditer(para):
+            pre = para[max(0, m.start() - 60):m.start()]
+            if REF_RE.search(pre) or re.search(r'\d+\s*절', pre):
+                spans.append((m.start(), m.end()))
+        start = len(words)
+        for m in re.finditer(r'\S+', para):
+            w = m.group()
+            words.append([w, bool(SENT_END_RE.search(w)), any(a <= m.start() < b for a, b in spans)])
+        if len(words) > start:
+            words[-1][1] = True
+    return words
+
+
+def norm(s):
+    return ''.join(ch for ch in s.lower() if ch.isalnum())
+
+
+def make_cues(words, maxc=18, minflush=14):
+    """단어를 한 줄 maxc자, 최대 2줄짜리 자막 조각으로 묶는다. 문장이 끝나면 되도록 거기서 끊는다."""
+    cues, lines, cur = [], [], ''
+    nv = nw = 0
+
+    def emit(ls):
+        nonlocal nv, nw
+        t = '\n'.join(ls)
+        cues.append(dict(t=t, n=norm(t), verse=nv * 2 >= nw))
+        nv = nw = 0
+
+    for w, end, inv in words:
+        if cur and len(cur) + 1 + len(w) > maxc:
+            lines.append(cur)
+            cur = ''
+            if len(lines) == 2:
+                emit(lines)
+                lines = []
+        cur = (cur + ' ' + w).strip()
+        nw += 1
+        nv += bool(inv)
+        if end and len(lines) * maxc + len(cur) >= minflush:
+            lines.append(cur)
+            cur = ''
+            emit(lines)
+            lines = []
+    if cur:
+        lines.append(cur)
+    if lines:
+        emit(lines)
+    return [c for c in cues if c['n']]
+
+
+def transcript_stream(segs):
+    """위스퍼 결과를 글자 단위(정규화) + 글자별 시작/끝 시간으로 펼친다. 단어 시간이 있으면 그것을 쓴다."""
+    ch, ts, te = [], [], []
+    for sg in segs:
+        items = [(w[0], w[1], w[2]) for w in sg['w']] if sg.get('w') else [(sg['s'], sg['e'], sg['t'])]
+        for a, b, txt in items:
+            n = norm(txt)
+            if not n:
+                continue
+            d = (b - a) / len(n)
+            for k, c in enumerate(n):
+                ch.append(c)
+                ts.append(a + k * d)
+                te.append(a + (k + 1) * d)
+    return ''.join(ch), np.array(ts), np.array(te)
+
+
+def robust_blocks(raw, long_n=6, tol=300, near=12):
+    """difflib 일치 블록에서 우연히 맞은 짧은 블록(반복 문구 등)을 걸린다.
+    긴 블록들의 대표 오프셋(j-i)에서 크게 벗어난 블록은 버리고, 짧은 블록은 이웃 긴 블록과 오프셋이 거의 같을 때만 남긴다."""
+    big = [b for b in raw if b[2] >= long_n]
+    if not big:
+        return []
+    ds = sorted(((b[1] - b[0]), b[2]) for b in big)
+    half, acc, dmed = sum(n for _, n in ds) / 2, 0, ds[0][0]
+    for d, n in ds:
+        acc += n
+        if acc >= half:
+            dmed = d
+            break
+    kept = [b for b in big if abs((b[1] - b[0]) - dmed) <= tol]
+    if not kept:
+        return []
+    for b in raw:
+        if b[2] < long_n:
+            nb = min(kept, key=lambda k: abs(k[0] - b[0]))
+            if abs((b[1] - b[0]) - (nb[1] - nb[0])) <= near and b[2] >= 2:
+                kept.append(b)
+    kept.sort()
+    return kept
+
+
+def align_cues(cues, segs, dur):
+    """원고 자막 조각 <-> 음성 인식 글자를 맞춰 각 조각의 시간을 정한다.
+    글자(3글자 묶음) 일치 구간을 기준점으로 삼고, 일치가 적은 조각은 앞뒤 기준점 사이 시간으로 추정한다.
+    반환: (자막 목록[s,e,t,verse], 통계)"""
+    T, ts, te = transcript_stream(segs)
+    offs, S = [], ''
+    for c in cues:
+        offs.append(len(S))
+        S += c['n']
+    match = np.full(len(S), -1, dtype=np.int64)
+    # 원고를 앞에서부터 ~400자씩 끊어, 음성 글자열의 "지금 위치 근처"에서만 찾는다(반복 문구에 휘둘리지 않게).
+    # 못 찾는 구간이 이어지면 탐색 범위를 넓힌다(설교자가 크게 건너뛴 경우 대비).
+    pos, fails, i0 = 0, 0, 0
+    while i0 < len(S) and len(T) >= 3:
+        i1 = min(len(S), i0 + 400)
+        sb = S[i0:i1]
+        reach = int(len(sb) * 2 + 800) * (2 ** fails)
+        j0, j1 = max(0, pos - 100), min(len(T), pos + reach)
+        got = 0
+        if len(sb) >= 3 and j1 - j0 >= 3:
+            ta = [sb[i:i + 3] for i in range(len(sb) - 2)]
+            tb = [T[j:j + 3] for j in range(j0, j1 - 2)]
+            raw = [b for b in difflib.SequenceMatcher(None, ta, tb, autojunk=False).get_matching_blocks() if b[2]]
+            blocks = robust_blocks(raw)
+            got = sum(b[2] + 2 for b in blocks)
+            if got >= 0.25 * len(sb):
+                for i, j, n in blocks:
+                    match[i0 + i:i0 + i + n + 2] = np.arange(j0 + j, j0 + j + n + 2)
+                pos = j0 + blocks[-1][1] + blocks[-1][2] + 2
+                fails = 0
+            else:
+                got = 0
+        if not got:
+            fails = min(fails + 1, 4)
+        i0 = i1
+    anch = {}  # 조각 번호 -> (시작, 끝, 일치율)
+    for k, c in enumerate(cues):
+        L = len(c['n'])
+        m = match[offs[k]:offs[k] + L]
+        hit = np.nonzero(m >= 0)[0]
+        frac = len(hit) / max(L, 1)
+        if frac >= 0.3:
+            f, l = int(hit[0]), int(hit[-1])
+            anch[k] = (float(ts[m[f]]) - f * CPS, float(te[m[l]]) + (L - 1 - l) * CPS, frac)
+    res = [None] * len(cues)
+    for k, (a, b, fr) in anch.items():
+        res[k] = [a, b, 'm']
+    interp = dropped = 0
+    k = 0
+    while k < len(cues):  # 일치가 적은 연속 구간: 앞뒤 기준점 사이에 글자 수 비례로 배치(시간 여유가 맞을 때만)
+        if k in anch:
+            k += 1
+            continue
+        j = k
+        while j < len(cues) and j not in anch:
+            j += 1
+        lo = res[k - 1][1] if k > 0 and res[k - 1] else 0.0
+        hi = res[j][0] if j < len(cues) and res[j] else dur
+        tot = sum(len(cues[x]['n']) for x in range(k, j))
+        exp = tot * CPS
+        win = hi - lo
+        if tot and 0.6 * exp <= win <= 2.0 * exp + 2:
+            t = lo
+            for x in range(k, j):
+                d = win * len(cues[x]['n']) / tot
+                res[x] = [t, t + d, 'i']
+                t += d
+                interp += 1
+        else:
+            dropped += j - k
+        k = j
+    out = []
+    prev_end = 0.0
+    live = [x for x in range(len(cues)) if res[x]]
+    for idx, x in enumerate(live):
+        a, b, kind = res[x]
+        nxt = res[live[idx + 1]][0] if idx + 1 < len(live) else dur
+        a = max(a, prev_end, 0.0)
+        b = min(max(b, a + 0.8), nxt if nxt > a + 0.3 else b, dur)
+        if b - a < 0.3:
+            dropped += 1
+            continue
+        out.append(dict(s=round(a, 2), e=round(b, 2), t=cues[x]['t'], verse=cues[x]['verse'], kind=kind, k=x))
+        prev_end = b
+    stats = dict(cues=len(cues), matched=len(anch), interp=interp, dropped=dropped,
+                 script_cov=float((match >= 0).mean()) if len(S) else 0.0,
+                 speech_cov=float(len(set(match[match >= 0].tolist())) / max(len(T), 1)))
+    return out, stats
+
+
+def find_script(video_path):
+    stem = os.path.splitext(video_path)[0]
+    for ext in ('.docx', '.DOCX', '.txt', '.TXT'):
+        if os.path.isfile(stem + ext):
+            return stem + ext
+    return None
+
+
+def get_segments(mid, m, model, lang, words, log):
+    """위스퍼 분석 결과를 영상 해시+모델별로 저장해 두고 재사용한다(재실행 시 오래 걸리지 않게)."""
+    cp = os.path.join(CACHE, f"tr_{m['hash']}_{model}_{'w' if words else 's'}.json")
+    if os.path.exists(cp):
+        log('  저장된 음성 분석 결과를 재사용합니다')
+        with open(cp, encoding='utf-8') as f:
+            return json.load(f)
+    job = dict(msg='', progress=0.0, result=None)
+    run_transcribe(job, mid, lang, model, words)
+    segs = job['result']['subs']
+    with open(cp, 'w', encoding='utf-8') as f:
+        json.dump(segs, f, ensure_ascii=False)
+    return segs
+
+
 # ---------------------------------------------------------------- 무음 컷
 def speech_ranges(path, dur, segs, min_silence=0.8, pad=0.25):
-    """에너지 기반 무음 탐지. 위스퍼가 말한 구간은 항상 살린다. 반환: [(시작, 끝)] 초."""
+    """에너지 기반 무음 탐지. 위스퍼가 말한 구간은 항상 살린다(단어 시간이 있으면 단어 단위, 없으면 문장 단위).
+    반환: [(시작, 끝)] 초."""
     pcm = decode_pcm(path, 16000, 1)
     fr = 320  # 20ms
     n = len(pcm) // fr
@@ -130,7 +364,8 @@ def speech_ranges(path, dur, segs, min_silence=0.8, pad=0.25):
             i = j
         else:
             i += 1
-    ranges += [[s['s'], s['e']] for s in segs]
+    for sg in segs:
+        ranges += [[w[0], w[1]] for w in sg['w']] if sg.get('w') else [[sg['s'], sg['e']]]
     ranges.sort()
     merged = []
     for a, b in ranges:  # 무음이 min_silence 미만이면 이어 붙임
@@ -149,12 +384,15 @@ def speech_ranges(path, dur, segs, min_silence=0.8, pad=0.25):
 
 
 def remap(t, ranges):
+    """원본 시간 -> 컷 편집 후 시간. 잘려 나간 구간 안의 시간은 그 지점(다음 구간 시작)으로 모은다."""
     off = 0.0
     for a, b in ranges:
-        if a - 1e-3 <= t <= b + 1e-3:
+        if t < a:
+            return off
+        if t <= b:
             return off + (t - a)
         off += b - a
-    return None
+    return off
 
 
 # ---------------------------------------------------------------- 인코딩 (select/aselect 단일 패스)
@@ -196,8 +434,15 @@ def encode(src, ranges, subs, W, H, outp, job=None, sub_settings=None):
 
 
 # ---------------------------------------------------------------- 전체 처리
-def process_file(path, outdir, model='small', lang='ko', min_silence=0.8, pad=0.25, segs=None, log=print):
-    """영상 1개 처리. segs를 주면 위스퍼를 건너뛴다(테스트용). 반환: 결과 파일 경로 dict."""
+def fmt_t(t):
+    return f'{int(t // 60):02d}:{t % 60:04.1f}'
+
+
+def process_file(path, outdir, model='small', lang='ko', min_silence=0.8, pad=0.25, segs=None, script=None,
+                 subs_mode='auto', log=print):
+    """영상 1개 처리. script(docx/txt)가 있으면 원고 맞춤 자막, 없으면 장절 언급 기반 말씀 자막.
+    subs_mode: auto(원고 있으면 all, 없으면 verse) / all(전체) / verse(말씀 구간만).
+    segs를 주면 위스퍼를 건너뛴다(테스트용). 반환: 결과 파일 경로 dict."""
     os.makedirs(outdir, exist_ok=True)
     name = os.path.basename(path)
     base = re.sub(r'[\\/:*?"<>|]', '_', os.path.splitext(name)[0])
@@ -206,50 +451,70 @@ def process_file(path, outdir, model='small', lang='ko', min_silence=0.8, pad=0.
     dst = os.path.join(MEDIA, mid + ext)
     log(f'[{name}] 복사 중…')
     shutil.copy2(path, dst)
-    m = register_media(dst, mid, ext, name)
-    if not m['hasVideo'] or not m['hasAudio']:
-        raise RuntimeError('영상과 오디오가 모두 있는 파일이어야 합니다')
-    if segs is None:
-        log(f'[{name}] 음성 분석(자막) 중… 영상 길이에 따라 오래 걸릴 수 있습니다')
-        job = dict(msg='', progress=0.0, result=None)
-        run_transcribe(job, mid, lang, model)
-        segs = job['result']['subs']
-    log(f'[{name}] 말씀 구간 찾는 중… (문장 {len(segs)}개)')
-    regions = find_verse_regions(segs)
-    ranges = speech_ranges(media_file(m), m['duration'], segs, min_silence, pad)
-    subs = []
-    for r in regions:
-        for sg in segs[r['first']:r['last'] + 1]:
-            for c in chunk_sub(sg):
+    try:
+        m = register_media(dst, mid, ext, name)
+        if not m['hasVideo'] or not m['hasAudio']:
+            raise RuntimeError('영상과 오디오가 모두 있는 파일이어야 합니다')
+        mode = subs_mode if subs_mode != 'auto' else ('all' if script else 'verse')
+        if segs is None:
+            log(f'[{name}] 음성 분석 중… 영상 길이에 따라 오래 걸릴 수 있습니다 (25분 영상은 15~30분)')
+            segs = get_segments(mid, m, model, lang, bool(script), log)
+        ranges = speech_ranges(media_file(m), m['duration'], segs, min_silence, pad)
+        rep = []
+        if script:
+            log(f'[{name}] 원고({os.path.basename(script)})와 음성을 맞추는 중…')
+            cues = make_cues(script_words(read_script(script)))
+            aligned, st = align_cues(cues, segs, m['duration'])
+            if mode == 'verse':
+                aligned = [c for c in aligned if c['verse']]
+            subs = []
+            for c in aligned:
                 a, b = remap(c['s'], ranges), remap(c['e'], ranges)
-                if a is not None and b is not None and b > a:
+                if b - a >= 0.3:
                     subs.append(dict(s=round(a, 2), e=round(b, 2), t=c['t']))
-    W, H = m['w'] // 2 * 2, m['h'] // 2 * 2
-    kept = sum(b - a for a, b in ranges)
-    outp = os.path.join(outdir, f'{base}_편집.mp4')
-    log(f'[{name}] 인코딩 중… ({m["duration"]:.0f}초 → {kept:.0f}초)')
-    job = dict(progress=0.0)
-    encode(media_file(m), ranges, subs, W, H, outp, job)
-    srt_p = os.path.join(outdir, f'{base}_말씀자막.srt')
-    with open(srt_p, 'w', encoding='utf-8') as f:
-        f.write(make_srt(subs))
-    rep_p = os.path.join(outdir, f'{base}_리포트.txt')
-    with open(rep_p, 'w', encoding='utf-8') as f:
-        f.write(f'원본 {m["duration"]:.1f}초 → 편집 {kept:.1f}초 (무음 {m["duration"] - kept:.1f}초 제거, 컷 {len(ranges)}개)\n')
-        f.write(f'찾은 말씀 {len(regions)}곳 — 자막 내용은 AI 인식이라 성경 원문과 다를 수 있으니 반드시 검수하세요.\n\n')
-        for r in regions:
-            f.write(f'- {int(r["s"] // 60):02d}:{r["s"] % 60:04.1f}~{int(r["e"] // 60):02d}:{r["e"] % 60:04.1f}  {r["ref"]}'
-                    f'{"" if r["hasVerse"] else "  (절 번호 없음: 해설일 수 있음)"}\n')
-            for sg in segs[r['first']:r['last'] + 1]:
-                f.write(f'    {sg["t"]}\n')
-    # 원본/사본 정리: 처리가 끝난 임시 복사본은 지운다
-    for p_ in (dst, server.meta_path(mid)):
-        try:
-            os.remove(p_)
-        except OSError:
-            pass
-    log(f'[{name}] 완료 → {outp}')
-    return dict(video=outp, srt=srt_p, report=rep_p, regions=regions, cuts=len(ranges), kept=kept)
+            rep.append(f'원고 맞춤 자막({"전체" if mode == "all" else "성경 말씀 구간만"}): 원고 조각 {st["cues"]}개 중 '
+                       f'음성과 일치 {st["matched"]}개, 시간 추정 {st["interp"]}개, 제외 {st["dropped"]}개')
+            rep.append(f'원고 글자의 {st["script_cov"] * 100:.0f}%가 음성에서 확인됨, 음성의 {st["speech_cov"] * 100:.0f}%가 원고와 일치')
+            rep.append('※ 일치율이 낮으면(원고와 다르게 설교했거나 음성 인식이 어려운 구간) 해당 구간 자막이 빠지거나 시간이 어긋날 수 있습니다.')
+            miss = [c for c in cues if c['t'] not in {a['t'] for a in aligned}]
+            if miss:
+                rep.append(f'\n[자막에서 빠진 원고 구간 {len(miss)}곳 — 설교에서 건너뛰었는지 확인하세요]')
+                rep += [f'  - {c["t"].replace(chr(10), " ")}' for c in miss[:60]]
+        else:
+            log(f'[{name}] 말씀 구간 찾는 중… (문장 {len(segs)}개)')
+            regions = find_verse_regions(segs)
+            subs = []
+            for r in regions:
+                for sg in segs[r['first']:r['last'] + 1]:
+                    for c in chunk_sub(sg):
+                        a, b = remap(c['s'], ranges), remap(c['e'], ranges)
+                        if b - a >= 0.3:
+                            subs.append(dict(s=round(a, 2), e=round(b, 2), t=c['t']))
+            rep.append(f'원고 없이 장절 언급으로 찾은 말씀 {len(regions)}곳 (같은 이름의 docx를 영상 옆에 두면 훨씬 정확합니다)')
+            for r in regions:
+                rep.append(f'- {fmt_t(r["s"])}~{fmt_t(r["e"])}  {r["ref"]}'
+                           f'{"" if r["hasVerse"] else "  (절 번호 없음: 해설일 수 있음)"}')
+                rep += [f'    {sg["t"]}' for sg in segs[r['first']:r['last'] + 1]]
+        W, H = m['w'] // 2 * 2, m['h'] // 2 * 2
+        kept = sum(b - a for a, b in ranges)
+        outp = os.path.join(outdir, f'{base}_편집.mp4')
+        log(f'[{name}] 인코딩 중… ({m["duration"]:.0f}초 → {kept:.0f}초, 자막 {len(subs)}개)')
+        encode(media_file(m), ranges, subs, W, H, outp, dict(progress=0.0))
+        srt_p = os.path.join(outdir, f'{base}_자막.srt')
+        with open(srt_p, 'w', encoding='utf-8') as f:
+            f.write(make_srt(subs))
+        rep_p = os.path.join(outdir, f'{base}_리포트.txt')
+        with open(rep_p, 'w', encoding='utf-8') as f:
+            f.write(f'원본 {m["duration"]:.1f}초 → 편집 {kept:.1f}초 (무음 {m["duration"] - kept:.1f}초 제거, 컷 {len(ranges)}개)\n')
+            f.write('\n'.join(rep) + '\n')
+        log(f'[{name}] 완료 → {outp}')
+        return dict(video=outp, srt=srt_p, report=rep_p, cuts=len(ranges), kept=kept, subs=len(subs))
+    finally:  # 처리용 임시 복사본 정리
+        for p_ in (dst, server.meta_path(mid)):
+            try:
+                os.remove(p_)
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------------------- 폴더 감시
@@ -261,23 +526,29 @@ def load_ledger():
         return {}
 
 
-def watch(folder, outdir, interval=15, **kw):
+def watch(folder, outdir, interval=15, wait_script=600, **kw):
+    """folder를 감시. 영상과 같은 이름의 docx/txt가 있으면 원고 맞춤 자막. 원고가 아직 없으면 wait_script초 기다린다."""
     done = load_ledger()
-    sizes = {}
+    sizes, first_seen = {}, {}
     print(f'감시 시작: {folder}\n결과 폴더: {outdir}\n(종료: Ctrl+C)')
     while True:
         for fn in sorted(os.listdir(folder)):
             p = os.path.join(folder, fn)
             if not os.path.isfile(p) or os.path.splitext(fn)[1].lower() not in VIDEO_EXT:
                 continue
-            key = f'{fn}|{os.path.getsize(p)}'
+            sc = find_script(p)
+            key = f'{fn}|{os.path.getsize(p)}|{os.path.getsize(sc) if sc else 0}'
             if key in done:
                 continue
-            if sizes.get(p) != os.path.getsize(p):  # 업로드/동기화 중: 크기가 안정될 때까지 대기
-                sizes[p] = os.path.getsize(p)
+            cur = (os.path.getsize(p), os.path.getsize(sc) if sc else 0)
+            if sizes.get(p) != cur:  # 업로드/동기화 중: 크기가 안정될 때까지 대기
+                sizes[p] = cur
+                first_seen.setdefault(p, time.time())
                 continue
+            if not sc and time.time() - first_seen.get(p, 0) < wait_script:
+                continue  # 원고(docx)가 곧 올라올 수 있으니 잠시 기다림
             try:
-                process_file(p, outdir, **kw)
+                process_file(p, outdir, script=sc, **kw)
                 done[key] = time.strftime('%Y-%m-%d %H:%M:%S')
             except Exception as e:  # noqa
                 import traceback
@@ -290,18 +561,23 @@ def watch(folder, outdir, interval=15, **kw):
 
 
 if __name__ == '__main__':
-    ap = argparse.ArgumentParser(description='성경 말씀 자막 + 무음 컷 자동 편집')
+    ap = argparse.ArgumentParser(description='설교 영상 자동 편집: 원고 맞춤 자막 + 무음 컷')
     ap.add_argument('--watch', help='감시할 폴더 (Google Drive 데스크톱 동기화 폴더)')
     ap.add_argument('--file', help='영상 파일 1개만 처리')
+    ap.add_argument('--script', help='원고 파일(docx/txt). 생략하면 영상과 같은 이름의 docx를 찾는다')
+    ap.add_argument('--subs', default='auto', choices=['auto', 'all', 'verse'],
+                    help='auto: 원고 있으면 전체 자막, 없으면 말씀 구간만 / all: 전체 / verse: 성경 말씀 구간만')
     ap.add_argument('--out', help='결과 폴더 (기본: 감시폴더/output)')
     ap.add_argument('--model', default='small', help='whisper 모델: small(빠름) / medium(정확, 느림)')
     ap.add_argument('--silence', type=float, default=0.8, help='이 시간(초) 이상 무음이면 컷')
     ap.add_argument('--pad', type=float, default=0.25, help='말 앞뒤로 남기는 여유(초)')
+    ap.add_argument('--wait-script', type=int, default=600, help='원고가 없을 때 올라오기를 기다리는 시간(초)')
     a = ap.parse_args()
-    kw = dict(model=a.model, min_silence=a.silence, pad=a.pad)
+    kw = dict(model=a.model, min_silence=a.silence, pad=a.pad, subs_mode=a.subs)
     if a.file:
-        process_file(a.file, a.out or os.path.join(os.path.dirname(os.path.abspath(a.file)), 'output'), **kw)
+        process_file(a.file, a.out or os.path.join(os.path.dirname(os.path.abspath(a.file)), 'output'),
+                     script=a.script or find_script(a.file), **kw)
     elif a.watch:
-        watch(a.watch, a.out or os.path.join(a.watch, 'output'), **kw)
+        watch(a.watch, a.out or os.path.join(a.watch, 'output'), wait_script=a.wait_script, **kw)
     else:
         ap.print_help()
