@@ -35,4 +35,5 @@
 - whisper는 원고 모드에서 `word_timestamps=True`로 실행(`run_transcribe(words=True)`). 분석 결과는 `data/cache/tr_<해시>_<모델>_<w|s>.json`에 저장·재사용.
 - 무음: 에너지 기반 + whisper 단어 구간은 항상 보존(단어 시간 없으면 문장 구간). 인코딩은 `select/aselect` 단일 입력 패스(컷이 많아도 느려지지 않음). 편집기 `run_export`와는 별개 경로이고 자막 입히기만 `subtitles_filter()`를 공유.
 - 자막은 SRT가 아니라 `sub.ass`로 직접 생성(`subtitles_filter`): PlayRes=영상 해상도로 고정해 글자 크기·여백이 실제 픽셀(높이 대비 %)이 됨. ffmpeg `subtitles=sub.srt`+`force_style`은 PlayResY=288 기준이라 1080p에서 글자가 ~3.7배 커지고 위치도 틀어지므로 되돌리지 말 것. 스타일: `box`(흰 바탕+검은 글씨, 자동 편집 기본 크기 4%/아래 여백 4%) / `outline`(편집기 기본 3.5%/6%). 옵션 `--sub-size --sub-bottom --sub-style`.
+- 자막 줄 수/폭: 기본 한 줄(`--sub-lines 1`), 한 줄 글자 수는 영상 너비의 `--sub-width`%(기본 58, 강대상 너비)를 채우도록 `process_file`에서 계산(한글 한 글자 폭 ≈ 글자 크기×0.67). 문단 끝에서는 자막을 반드시 끊어 제목·메모 줄이 말한 문장에 붙지 않게 함(`script_words`의 문단끝 플래그).
 - 처리 이력은 `data/auto_done.json`(파일명|크기|원고크기). 구글 드라이브 API/커넥터는 사용하지 않음.

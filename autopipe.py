@@ -130,7 +130,7 @@ def read_script(path):
 
 
 def script_words(paras):
-    """문단 -> [(단어, 문장끝 여부, 성경 인용 여부)]. 장절 언급 바로 뒤의 따옴표 인용을 성경 본문으로 본다."""
+    """문단 -> [(단어, 문장끝 여부, 성경 인용 여부, 문단끝 여부)]. 장절 언급 바로 뒤의 따옴표 인용을 성경 본문으로 본다."""
     words = []
     for para in paras:
         spans = []
@@ -141,9 +141,9 @@ def script_words(paras):
         start = len(words)
         for m in re.finditer(r'\S+', para):
             w = m.group()
-            words.append([w, bool(SENT_END_RE.search(w)), any(a <= m.start() < b for a, b in spans)])
+            words.append([w, bool(SENT_END_RE.search(w)), any(a <= m.start() < b for a, b in spans), False])
         if len(words) > start:
-            words[-1][1] = True
+            words[-1][1] = words[-1][3] = True  # 문단 끝은 자막도 반드시 끊는다(제목·메모가 말한 문장에 붙지 않게)
     return words
 
 
@@ -151,8 +151,10 @@ def norm(s):
     return ''.join(ch for ch in s.lower() if ch.isalnum())
 
 
-def make_cues(words, maxc=18, minflush=14):
-    """단어를 한 줄 maxc자, 최대 2줄짜리 자막 조각으로 묶는다. 문장이 끝나면 되도록 거기서 끊는다."""
+def make_cues(words, maxc=18, minflush=None, nlines=2):
+    """단어를 한 줄 maxc자, 최대 nlines줄짜리 자막 조각으로 묶는다. 문장이 끝나면 되도록 거기서 끊는다."""
+    if minflush is None:
+        minflush = round(maxc * (0.78 if nlines > 1 else 0.45))
     cues, lines, cur = [], [], ''
     nv = nw = 0
 
@@ -162,17 +164,17 @@ def make_cues(words, maxc=18, minflush=14):
         cues.append(dict(t=t, n=norm(t), verse=nv * 2 >= nw))
         nv = nw = 0
 
-    for w, end, inv in words:
+    for w, end, inv, hard in words:
         if cur and len(cur) + 1 + len(w) > maxc:
             lines.append(cur)
             cur = ''
-            if len(lines) == 2:
+            if len(lines) == nlines:
                 emit(lines)
                 lines = []
         cur = (cur + ' ' + w).strip()
         nw += 1
         nv += bool(inv)
-        if end and len(lines) * maxc + len(cur) >= minflush:
+        if hard or (end and len(lines) * maxc + len(cur) >= minflush):
             lines.append(cur)
             cur = ''
             emit(lines)
@@ -334,8 +336,8 @@ def transcript_words(segs):
     return out
 
 
-def heard_cues(words, maxc=18, gap=0.8):
-    """AI가 들은 단어들로 자막 조각을 만든다(한 줄 maxc자, 최대 2줄, 쉬는 시간이 gap 넘으면 끊음)."""
+def heard_cues(words, maxc=18, gap=0.8, nlines=2):
+    """AI가 들은 단어들로 자막 조각을 만든다(한 줄 maxc자, 최대 nlines줄, 쉬는 시간이 gap 넘으면 끊음)."""
     cues, lines, cur, cs, ce = [], [], '', None, 0.0
 
     def emit():
@@ -353,7 +355,7 @@ def heard_cues(words, maxc=18, gap=0.8):
         if cur and len(cur) + 1 + len(w) > maxc:
             lines.append(cur)
             cur = ''
-            if len(lines) == 2:
+            if len(lines) == nlines:
                 emit()
         if cs is None:
             cs = a
@@ -365,7 +367,7 @@ def heard_cues(words, maxc=18, gap=0.8):
     return [c for c in cues if c['e'] - c['s'] >= 0.3]
 
 
-def mix_cues(aligned, segs, thr=0.5):
+def mix_cues(aligned, segs, thr=0.5, maxc=18, nlines=2):
     """원고 글자(정확) + AI가 들은 글자(원고와 다르게 말한 곳) 혼합.
     - 성경 인용 조각은 원고 글자 우선, 그 외는 원고와 일치율이 thr 이상일 때만 원고 글자.
     - 그 밖의 말소리(즉흥 멘트·말을 바꾼 곳)는 AI가 들은 단어로 자막을 만든다. 확신도가 낮은 구간(환청)은 제외.
@@ -391,7 +393,7 @@ def mix_cues(aligned, segs, thr=0.5):
     for r in runs:
         ps = [w[3] for w in r if w[3] is not None]
         if len(r) >= 3 and r[-1][1] - r[0][0] >= 1.2 and (not ps or sum(ps) / len(ps) >= 0.35):
-            heard += heard_cues(r)
+            heard += heard_cues(r, maxc, nlines=nlines)
     allc = sorted(keep + heard, key=lambda c: c['s'])
     for i in range(len(allc) - 1):
         allc[i]['e'] = round(min(allc[i]['e'], allc[i + 1]['s']), 2) if allc[i + 1]['s'] > allc[i]['s'] else allc[i]['e']
@@ -520,7 +522,7 @@ def fmt_t(t):
 
 
 def process_file(path, outdir, model='small', lang='ko', min_silence=0.8, pad=0.25, segs=None, script=None,
-                 subs_mode='auto', sub_settings=None, text_mode='mixed', mix_thr=0.5, log=print):
+                 subs_mode='auto', sub_settings=None, text_mode='mixed', mix_thr=0.5, sub_lines=1, sub_width=58.0, log=print):
     """영상 1개 처리. script(docx/txt)가 있으면 원고 맞춤 자막, 없으면 장절 언급 기반 말씀 자막.
     subs_mode: auto(원고 있으면 all, 없으면 verse) / all(전체) / verse(말씀 구간만).
     text_mode: mixed(원고 글자 + 원고와 다르게 말한 곳은 AI가 들은 글자) / script(원고 글자만) / heard(AI가 들은 글자만).
@@ -540,6 +542,9 @@ def process_file(path, outdir, model='small', lang='ko', min_silence=0.8, pad=0.
         if text_mode == 'heard':
             subs_mode = 'all'
         mode = subs_mode if subs_mode != 'auto' else ('all' if script else 'verse')
+        # 한 줄에 들어갈 글자 수: 영상 너비의 sub_width%를 채우도록 (한글 한 글자 폭 ~ 글자 크기의 0.67배)
+        fs_px = m['h'] * float((sub_settings or {}).get('subSize', 4.0)) / 100
+        maxc = max(10, int(m['w'] * sub_width / 100 / (0.67 * fs_px)))
         if segs is None:
             log(f'[{name}] 음성 분석 중… 영상 길이에 따라 오래 걸릴 수 있습니다 (25분 영상은 15~30분)')
             segs = get_segments(mid, m, model, lang, bool(script) or text_mode == 'heard', log)
@@ -547,7 +552,7 @@ def process_file(path, outdir, model='small', lang='ko', min_silence=0.8, pad=0.
         rep = []
         if text_mode == 'heard':
             log(f'[{name}] AI가 들은 글자로 자막을 만드는 중…')
-            aligned = heard_cues(transcript_words(segs))
+            aligned = heard_cues(transcript_words(segs), maxc, nlines=sub_lines)
             subs = []
             for c in aligned:
                 a, b = remap(c['s'], ranges), remap(c['e'], ranges)
@@ -556,14 +561,14 @@ def process_file(path, outdir, model='small', lang='ko', min_silence=0.8, pad=0.
             rep.append(f'자막 글자: AI가 들은 그대로(전체) — 자막 {len(aligned)}개. 인식 오류가 있을 수 있으니 검수하세요.')
         elif script:
             log(f'[{name}] 원고({os.path.basename(script)})와 음성을 맞추는 중…')
-            cues = make_cues(script_words(read_script(script)))
+            cues = make_cues(script_words(read_script(script)), maxc, nlines=sub_lines)
             aligned, st = align_cues(cues, segs, m['duration'])
             miss = [c for c in cues if c['t'] not in {a['t'] for a in aligned}]
             heard = []
             if mode == 'verse':
                 aligned = [c for c in aligned if c['verse']]
             elif text_mode == 'mixed':
-                aligned, mx = mix_cues(aligned, segs, mix_thr)
+                aligned, mx = mix_cues(aligned, segs, mix_thr, maxc, sub_lines)
                 heard = [c for c in aligned if c['kind'] == 'h']
             subs = []
             for c in aligned:
@@ -675,6 +680,8 @@ if __name__ == '__main__':
     ap.add_argument('--text', default='mixed', choices=['mixed', 'script', 'heard'],
                     help='자막 글자: mixed=원고 글자+원고와 다르게 말한 곳은 AI가 들은 글자 / script=원고만 / heard=AI가 들은 글자만')
     ap.add_argument('--mix-threshold', type=float, default=0.5, help='mixed에서 원고 글자를 쓰는 최소 일치율(0~1). 높일수록 AI 들은 글자를 더 자주 씀')
+    ap.add_argument('--sub-lines', type=int, default=1, choices=[1, 2], help='자막 줄 수. 1: 길게 한 줄 / 2: 두 줄')
+    ap.add_argument('--sub-width', type=float, default=58.0, help='한 줄 자막이 차지하는 폭(영상 너비 대비 %%). 강대상 너비에 맞춰 조절')
     ap.add_argument('--sub-size', type=float, default=4.0, help='자막 글자 크기(화면 높이 대비 %%). 작게: 3.5, 크게: 5')
     ap.add_argument('--sub-bottom', type=float, default=4.0, help='자막 아래 여백(화면 높이 대비 %%). 값이 클수록 위로 올라감')
     ap.add_argument('--sub-style', default='box', choices=['box', 'outline'], help='box: 흰 바탕+검은 글씨 / outline: 흰 글씨+검은 테두리')
@@ -684,6 +691,7 @@ if __name__ == '__main__':
     ap.add_argument('--wait-script', type=int, default=600, help='원고가 없을 때 올라오기를 기다리는 시간(초)')
     a = ap.parse_args()
     kw = dict(model=a.model, min_silence=a.silence, pad=a.pad, subs_mode=a.subs, text_mode=a.text, mix_thr=a.mix_threshold,
+              sub_lines=a.sub_lines, sub_width=a.sub_width,
               sub_settings=dict(subSize=a.sub_size, subBottom=a.sub_bottom, subStyle=a.sub_style))
     if a.file:
         process_file(a.file, a.out or os.path.join(os.path.dirname(os.path.abspath(a.file)), 'output'),
