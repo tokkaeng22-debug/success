@@ -288,7 +288,7 @@ def run_transcribe(job, mid, lang, model_name, words=False):
             if t:
                 o = dict(s=round(sg.start, 2), e=round(sg.end, 2), t=t)
                 if words:
-                    o['w'] = [[round(w.start, 2), round(w.end, 2), w.word] for w in (sg.words or [])]
+                    o['w'] = [[round(w.start, 2), round(w.end, 2), w.word, round(w.probability, 2)] for w in (sg.words or [])]
                 out.append(o)
             job['progress'] = min(0.99, sg.end / max(dur, 0.1))
         base = os.path.splitext(m['name'] or mid)[0]

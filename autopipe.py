@@ -10,7 +10,7 @@
   <이름>_자막.srt     자막 (컷 이후 타임라인 기준)
   <이름>_리포트.txt   일치율·자막에서 빠진 원고 구간 (검수용)
 """
-import sys, os, re, json, time, argparse, shutil, subprocess, threading, uuid, zipfile, html, difflib
+import sys, os, re, json, time, argparse, shutil, subprocess, threading, uuid, zipfile, html, difflib, bisect
 
 import numpy as np
 
@@ -308,12 +308,95 @@ def align_cues(cues, segs, dur):
         if b - a < 0.3:
             dropped += 1
             continue
-        out.append(dict(s=round(a, 2), e=round(b, 2), t=cues[x]['t'], verse=cues[x]['verse'], kind=kind, k=x))
+        out.append(dict(s=round(a, 2), e=round(b, 2), t=cues[x]['t'], verse=cues[x]['verse'], kind=kind, k=x,
+                        frac=round(anch[x][2], 2) if x in anch else 0.0))
         prev_end = b
     stats = dict(cues=len(cues), matched=len(anch), interp=interp, dropped=dropped,
                  script_cov=float((match >= 0).mean()) if len(S) else 0.0,
                  speech_cov=float(len(set(match[match >= 0].tolist())) / max(len(T), 1)))
     return out, stats
+
+
+def transcript_words(segs):
+    """위스퍼 결과 -> [(시작, 끝, 단어, 확신도|None)]. 단어 시간이 없으면 문장을 글자 수 비례로 나눈다."""
+    out = []
+    for sg in segs:
+        if sg.get('w'):
+            out += [(w[0], w[1], w[2].strip(), w[3] if len(w) > 3 else None) for w in sg['w'] if w[2].strip()]
+        else:
+            ws = sg['t'].split()
+            tot = sum(len(w) for w in ws) or 1
+            t = sg['s']
+            for w in ws:
+                d = (sg['e'] - sg['s']) * len(w) / tot
+                out.append((t, t + d, w, None))
+                t += d
+    return out
+
+
+def heard_cues(words, maxc=18, gap=0.8):
+    """AI가 들은 단어들로 자막 조각을 만든다(한 줄 maxc자, 최대 2줄, 쉬는 시간이 gap 넘으면 끊음)."""
+    cues, lines, cur, cs, ce = [], [], '', None, 0.0
+
+    def emit():
+        nonlocal lines, cur, cs
+        if cur:
+            lines.append(cur)
+        if lines:
+            cues.append(dict(s=round(cs, 2), e=round(max(ce, cs + 0.6), 2), t='\n'.join(lines), verse=False, kind='h',
+                             frac=0.0))
+        lines, cur, cs = [], '', None
+
+    for a, b, w, _ in words:
+        if cs is not None and a - ce > gap:
+            emit()
+        if cur and len(cur) + 1 + len(w) > maxc:
+            lines.append(cur)
+            cur = ''
+            if len(lines) == 2:
+                emit()
+        if cs is None:
+            cs = a
+        cur = (cur + ' ' + w).strip()
+        ce = b
+    emit()
+    for i in range(len(cues) - 1):  # 겹침 방지
+        cues[i]['e'] = round(min(cues[i]['e'], cues[i + 1]['s']), 2)
+    return [c for c in cues if c['e'] - c['s'] >= 0.3]
+
+
+def mix_cues(aligned, segs, thr=0.5):
+    """원고 글자(정확) + AI가 들은 글자(원고와 다르게 말한 곳) 혼합.
+    - 성경 인용 조각은 원고 글자 우선, 그 외는 원고와 일치율이 thr 이상일 때만 원고 글자.
+    - 그 밖의 말소리(즉흥 멘트·말을 바꾼 곳)는 AI가 들은 단어로 자막을 만든다. 확신도가 낮은 구간(환청)은 제외.
+    반환: (자막 목록, 통계)"""
+    keep = [c for c in aligned if c['kind'] == 'm' and (c['verse'] or c['frac'] >= thr)]
+    iv = sorted((c['s'] - 0.05, c['e'] + 0.05) for c in keep)
+    starts = [x[0] for x in iv]
+    unc = []
+    for w in transcript_words(segs):
+        mid = (w[0] + w[1]) / 2
+        i = bisect.bisect_right(starts, mid) - 1
+        if not (i >= 0 and iv[i][0] <= mid <= iv[i][1]):
+            unc.append(w)
+    runs, cur = [], []
+    for w in unc:
+        if cur and w[0] - cur[-1][1] > 1.2:
+            runs.append(cur)
+            cur = []
+        cur.append(w)
+    if cur:
+        runs.append(cur)
+    heard = []
+    for r in runs:
+        ps = [w[3] for w in r if w[3] is not None]
+        if len(r) >= 3 and r[-1][1] - r[0][0] >= 1.2 and (not ps or sum(ps) / len(ps) >= 0.35):
+            heard += heard_cues(r)
+    allc = sorted(keep + heard, key=lambda c: c['s'])
+    for i in range(len(allc) - 1):
+        allc[i]['e'] = round(min(allc[i]['e'], allc[i + 1]['s']), 2) if allc[i + 1]['s'] > allc[i]['s'] else allc[i]['e']
+    allc = [c for c in allc if c['e'] - c['s'] >= 0.3]
+    return allc, dict(script=len(keep), replaced=len(aligned) - len(keep), heard=len(heard))
 
 
 def find_script(video_path):
@@ -437,9 +520,10 @@ def fmt_t(t):
 
 
 def process_file(path, outdir, model='small', lang='ko', min_silence=0.8, pad=0.25, segs=None, script=None,
-                 subs_mode='auto', sub_settings=None, log=print):
+                 subs_mode='auto', sub_settings=None, text_mode='mixed', mix_thr=0.5, log=print):
     """영상 1개 처리. script(docx/txt)가 있으면 원고 맞춤 자막, 없으면 장절 언급 기반 말씀 자막.
     subs_mode: auto(원고 있으면 all, 없으면 verse) / all(전체) / verse(말씀 구간만).
+    text_mode: mixed(원고 글자 + 원고와 다르게 말한 곳은 AI가 들은 글자) / script(원고 글자만) / heard(AI가 들은 글자만).
     segs를 주면 위스퍼를 건너뛴다(테스트용). 반환: 결과 파일 경로 dict."""
     os.makedirs(outdir, exist_ok=True)
     name = os.path.basename(path)
@@ -453,30 +537,52 @@ def process_file(path, outdir, model='small', lang='ko', min_silence=0.8, pad=0.
         m = register_media(dst, mid, ext, name)
         if not m['hasVideo'] or not m['hasAudio']:
             raise RuntimeError('영상과 오디오가 모두 있는 파일이어야 합니다')
+        if text_mode == 'heard':
+            subs_mode = 'all'
         mode = subs_mode if subs_mode != 'auto' else ('all' if script else 'verse')
         if segs is None:
             log(f'[{name}] 음성 분석 중… 영상 길이에 따라 오래 걸릴 수 있습니다 (25분 영상은 15~30분)')
-            segs = get_segments(mid, m, model, lang, bool(script), log)
+            segs = get_segments(mid, m, model, lang, bool(script) or text_mode == 'heard', log)
         ranges = speech_ranges(media_file(m), m['duration'], segs, min_silence, pad)
         rep = []
-        if script:
-            log(f'[{name}] 원고({os.path.basename(script)})와 음성을 맞추는 중…')
-            cues = make_cues(script_words(read_script(script)))
-            aligned, st = align_cues(cues, segs, m['duration'])
-            if mode == 'verse':
-                aligned = [c for c in aligned if c['verse']]
+        if text_mode == 'heard':
+            log(f'[{name}] AI가 들은 글자로 자막을 만드는 중…')
+            aligned = heard_cues(transcript_words(segs))
             subs = []
             for c in aligned:
                 a, b = remap(c['s'], ranges), remap(c['e'], ranges)
                 if b - a >= 0.3:
                     subs.append(dict(s=round(a, 2), e=round(b, 2), t=c['t']))
-            rep.append(f'원고 맞춤 자막({"전체" if mode == "all" else "성경 말씀 구간만"}): 원고 조각 {st["cues"]}개 중 '
-                       f'음성과 일치 {st["matched"]}개, 시간 추정 {st["interp"]}개, 제외 {st["dropped"]}개')
+            rep.append(f'자막 글자: AI가 들은 그대로(전체) — 자막 {len(aligned)}개. 인식 오류가 있을 수 있으니 검수하세요.')
+        elif script:
+            log(f'[{name}] 원고({os.path.basename(script)})와 음성을 맞추는 중…')
+            cues = make_cues(script_words(read_script(script)))
+            aligned, st = align_cues(cues, segs, m['duration'])
+            miss = [c for c in cues if c['t'] not in {a['t'] for a in aligned}]
+            heard = []
+            if mode == 'verse':
+                aligned = [c for c in aligned if c['verse']]
+            elif text_mode == 'mixed':
+                aligned, mx = mix_cues(aligned, segs, mix_thr)
+                heard = [c for c in aligned if c['kind'] == 'h']
+            subs = []
+            for c in aligned:
+                a, b = remap(c['s'], ranges), remap(c['e'], ranges)
+                if b - a >= 0.3:
+                    subs.append(dict(s=round(a, 2), e=round(b, 2), t=c['t']))
+            what = {'mixed': '원고 글자 + 원고와 다르게 말한 곳은 AI가 들은 글자', 'script': '원고 글자만'}[text_mode]
+            rep.append(f'자막 글자: {what} / 범위: {"전체" if mode == "all" else "성경 말씀 구간만"}')
+            rep.append(f'원고 조각 {st["cues"]}개 중 음성과 일치 {st["matched"]}개, 시간 추정 {st["interp"]}개, 제외 {st["dropped"]}개')
+            if text_mode == 'mixed' and mode == 'all':
+                rep.append(f'→ 원고 글자로 낸 자막 {mx["script"]}개, 원고와 달라서 AI 들은 글자로 바꾼 조각 {mx["replaced"]}개 포함, '
+                           f'AI 들은 글자 자막 {mx["heard"]}개 (일치율 기준 {mix_thr:.2f})')
             rep.append(f'원고 글자의 {st["script_cov"] * 100:.0f}%가 음성에서 확인됨, 음성의 {st["speech_cov"] * 100:.0f}%가 원고와 일치')
             rep.append('※ 일치율이 낮으면(원고와 다르게 설교했거나 음성 인식이 어려운 구간) 해당 구간 자막이 빠지거나 시간이 어긋날 수 있습니다.')
-            miss = [c for c in cues if c['t'] not in {a['t'] for a in aligned}]
+            if heard:
+                rep.append(f'\n[AI가 들은 글자로 쓴 자막 {len(heard)}개 — 즉흥 멘트이거나 원고와 다르게 말한 곳. 인식 오류 검수 필요 (원본 영상 시간)]')
+                rep += [f'  {fmt_t(c["s"])}  {c["t"].replace(chr(10), " ")}' for c in heard[:80]]
             if miss:
-                rep.append(f'\n[자막에서 빠진 원고 구간 {len(miss)}곳 — 설교에서 건너뛰었는지 확인하세요]')
+                rep.append(f'\n[원고에 있으나 영상에서 못 찾은 구간 {len(miss)}곳 — 설교에서 건너뛰었는지 확인하세요]')
                 rep += [f'  - {c["t"].replace(chr(10), " ")}' for c in miss[:60]]
         else:
             log(f'[{name}] 말씀 구간 찾는 중… (문장 {len(segs)}개)')
@@ -566,6 +672,9 @@ if __name__ == '__main__':
     ap.add_argument('--subs', default='auto', choices=['auto', 'all', 'verse'],
                     help='auto: 원고 있으면 전체 자막, 없으면 말씀 구간만 / all: 전체 / verse: 성경 말씀 구간만')
     ap.add_argument('--out', help='결과 폴더 (기본: 감시폴더/output)')
+    ap.add_argument('--text', default='mixed', choices=['mixed', 'script', 'heard'],
+                    help='자막 글자: mixed=원고 글자+원고와 다르게 말한 곳은 AI가 들은 글자 / script=원고만 / heard=AI가 들은 글자만')
+    ap.add_argument('--mix-threshold', type=float, default=0.5, help='mixed에서 원고 글자를 쓰는 최소 일치율(0~1). 높일수록 AI 들은 글자를 더 자주 씀')
     ap.add_argument('--sub-size', type=float, default=4.0, help='자막 글자 크기(화면 높이 대비 %%). 작게: 3.5, 크게: 5')
     ap.add_argument('--sub-bottom', type=float, default=4.0, help='자막 아래 여백(화면 높이 대비 %%). 값이 클수록 위로 올라감')
     ap.add_argument('--sub-style', default='box', choices=['box', 'outline'], help='box: 흰 바탕+검은 글씨 / outline: 흰 글씨+검은 테두리')
@@ -574,7 +683,7 @@ if __name__ == '__main__':
     ap.add_argument('--pad', type=float, default=0.25, help='말 앞뒤로 남기는 여유(초)')
     ap.add_argument('--wait-script', type=int, default=600, help='원고가 없을 때 올라오기를 기다리는 시간(초)')
     a = ap.parse_args()
-    kw = dict(model=a.model, min_silence=a.silence, pad=a.pad, subs_mode=a.subs,
+    kw = dict(model=a.model, min_silence=a.silence, pad=a.pad, subs_mode=a.subs, text_mode=a.text, mix_thr=a.mix_threshold,
               sub_settings=dict(subSize=a.sub_size, subBottom=a.sub_bottom, subStyle=a.sub_style))
     if a.file:
         process_file(a.file, a.out or os.path.join(os.path.dirname(os.path.abspath(a.file)), 'output'),
