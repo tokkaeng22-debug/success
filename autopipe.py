@@ -405,11 +405,9 @@ def encode(src, ranges, subs, W, H, outp, job=None, sub_settings=None):
           f"[0:a]aselect='{expr}',asetpts=N/SR/TB,aresample=44100[aout]"]
     lab = 'vc'
     if subs:
-        with open(os.path.join(tmp, 'sub.srt'), 'w', encoding='utf-8') as f:
-            f.write(make_srt(subs))
-        S = dict(subFont='Pretendard', subSize=3.5, subBold=True)
+        S = dict(subFont='Pretendard', subSize=4.0, subBold=True, subStyle='box', subBottom=4.0)
         S.update(sub_settings or {})
-        fc.append(subtitles_filter('vc', 'vout', W, H, S))
+        fc.append(subtitles_filter('vc', 'vout', W, H, S, subs, tmp))
         lab = 'vout'
     with open(os.path.join(tmp, 'graph.txt'), 'w', encoding='utf-8') as f:
         f.write(';\n'.join(fc))
@@ -439,7 +437,7 @@ def fmt_t(t):
 
 
 def process_file(path, outdir, model='small', lang='ko', min_silence=0.8, pad=0.25, segs=None, script=None,
-                 subs_mode='auto', log=print):
+                 subs_mode='auto', sub_settings=None, log=print):
     """영상 1개 처리. script(docx/txt)가 있으면 원고 맞춤 자막, 없으면 장절 언급 기반 말씀 자막.
     subs_mode: auto(원고 있으면 all, 없으면 verse) / all(전체) / verse(말씀 구간만).
     segs를 주면 위스퍼를 건너뛴다(테스트용). 반환: 결과 파일 경로 dict."""
@@ -499,7 +497,7 @@ def process_file(path, outdir, model='small', lang='ko', min_silence=0.8, pad=0.
         kept = sum(b - a for a, b in ranges)
         outp = os.path.join(outdir, f'{base}_편집.mp4')
         log(f'[{name}] 인코딩 중… ({m["duration"]:.0f}초 → {kept:.0f}초, 자막 {len(subs)}개)')
-        encode(media_file(m), ranges, subs, W, H, outp, dict(progress=0.0))
+        encode(media_file(m), ranges, subs, W, H, outp, dict(progress=0.0), sub_settings)
         srt_p = os.path.join(outdir, f'{base}_자막.srt')
         with open(srt_p, 'w', encoding='utf-8') as f:
             f.write(make_srt(subs))
@@ -568,12 +566,16 @@ if __name__ == '__main__':
     ap.add_argument('--subs', default='auto', choices=['auto', 'all', 'verse'],
                     help='auto: 원고 있으면 전체 자막, 없으면 말씀 구간만 / all: 전체 / verse: 성경 말씀 구간만')
     ap.add_argument('--out', help='결과 폴더 (기본: 감시폴더/output)')
+    ap.add_argument('--sub-size', type=float, default=4.0, help='자막 글자 크기(화면 높이 대비 %%). 작게: 3.5, 크게: 5')
+    ap.add_argument('--sub-bottom', type=float, default=4.0, help='자막 아래 여백(화면 높이 대비 %%). 값이 클수록 위로 올라감')
+    ap.add_argument('--sub-style', default='box', choices=['box', 'outline'], help='box: 흰 바탕+검은 글씨 / outline: 흰 글씨+검은 테두리')
     ap.add_argument('--model', default='small', help='whisper 모델: small(빠름) / medium(정확, 느림)')
     ap.add_argument('--silence', type=float, default=0.8, help='이 시간(초) 이상 무음이면 컷')
     ap.add_argument('--pad', type=float, default=0.25, help='말 앞뒤로 남기는 여유(초)')
     ap.add_argument('--wait-script', type=int, default=600, help='원고가 없을 때 올라오기를 기다리는 시간(초)')
     a = ap.parse_args()
-    kw = dict(model=a.model, min_silence=a.silence, pad=a.pad, subs_mode=a.subs)
+    kw = dict(model=a.model, min_silence=a.silence, pad=a.pad, subs_mode=a.subs,
+              sub_settings=dict(subSize=a.sub_size, subBottom=a.sub_bottom, subStyle=a.sub_style))
     if a.file:
         process_file(a.file, a.out or os.path.join(os.path.dirname(os.path.abspath(a.file)), 'output'),
                      script=a.script or find_script(a.file), **kw)

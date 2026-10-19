@@ -32,5 +32,6 @@
 - `--subs auto|all|verse`: 원고 있으면 전체(`all`), 없으면 말씀 구간만. 원고의 "장절 언급 바로 뒤 따옴표 인용"을 성경 본문(`verse`)으로 간주.
 - 원고 없는 경우: 장절 언급(`REF_RE`) + 이어지는 낭독 구간만 자막(휴리스틱, 약함).
 - whisper는 원고 모드에서 `word_timestamps=True`로 실행(`run_transcribe(words=True)`). 분석 결과는 `data/cache/tr_<해시>_<모델>_<w|s>.json`에 저장·재사용.
-- 무음: 에너지 기반 + whisper 단어 구간은 항상 보존(단어 시간 없으면 문장 구간). 인코딩은 `select/aselect` 단일 입력 패스(컷이 많아도 느려지지 않음). 편집기 `run_export`와는 별개 경로이고 자막 스타일만 `subtitles_filter()`를 공유.
+- 무음: 에너지 기반 + whisper 단어 구간은 항상 보존(단어 시간 없으면 문장 구간). 인코딩은 `select/aselect` 단일 입력 패스(컷이 많아도 느려지지 않음). 편집기 `run_export`와는 별개 경로이고 자막 입히기만 `subtitles_filter()`를 공유.
+- 자막은 SRT가 아니라 `sub.ass`로 직접 생성(`subtitles_filter`): PlayRes=영상 해상도로 고정해 글자 크기·여백이 실제 픽셀(높이 대비 %)이 됨. ffmpeg `subtitles=sub.srt`+`force_style`은 PlayResY=288 기준이라 1080p에서 글자가 ~3.7배 커지고 위치도 틀어지므로 되돌리지 말 것. 스타일: `box`(흰 바탕+검은 글씨, 자동 편집 기본 크기 4%/아래 여백 4%) / `outline`(편집기 기본 3.5%/6%). 옵션 `--sub-size --sub-bottom --sub-style`.
 - 처리 이력은 `data/auto_done.json`(파일명|크기|원고크기). 구글 드라이브 API/커넥터는 사용하지 않음.
