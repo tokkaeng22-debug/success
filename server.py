@@ -135,17 +135,7 @@ COMPAT_V = {'h264', 'vp8', 'vp9', 'av1'}
 COMPAT_A = {'aac', 'mp3', 'opus', 'vorbis', 'flac', 'pcm_s16le', 'pcm_s24le', 'pcm_f32le', 'pcm_u8'}
 
 
-@app.route('/api/upload', methods=['POST'])
-def upload():
-    f = request.files.get('file')
-    if not f:
-        return jsonify(error='파일 없음'), 400
-    mid = uuid.uuid4().hex[:12]
-    ext = os.path.splitext(f.filename or '')[1].lower()
-    if not re.fullmatch(r'\.[a-z0-9]{1,6}', ext):
-        ext = '.bin'
-    path = os.path.join(MEDIA, mid + ext)
-    f.save(path)
+def register_media(path, mid, ext, filename):
     h = hashlib.sha1()
     with open(path, 'rb') as fh:
         while True:
@@ -156,8 +146,8 @@ def upload():
     info = probe(path)
     if not info['hasVideo'] and not info['hasAudio']:
         os.remove(path)
-        return jsonify(error='지원하지 않는 파일입니다'), 400
-    m = dict(id=mid, name=f.filename, ext=ext, hash=h.hexdigest(), kind='video' if info['hasVideo'] else 'audio',
+        raise ValueError('지원하지 않는 파일입니다')
+    m = dict(id=mid, name=filename, ext=ext, hash=h.hexdigest(), kind='video' if info['hasVideo'] else 'audio',
              proxy=False, **info)
     # browsers cannot play everything -> make a light preview copy
     need = False
@@ -178,7 +168,24 @@ def upload():
         run([FFMPEG, '-y', '-v', 'error', '-ss', str(min(1.0, m['duration'] / 2)), '-i', path, '-frames:v', '1',
              '-vf', 'scale=-2:96', os.path.join(CACHE, mid + '.jpg')])
     save_meta(m)
-    return jsonify(m)
+    return m
+
+
+@app.route('/api/upload', methods=['POST'])
+def upload():
+    f = request.files.get('file')
+    if not f:
+        return jsonify(error='파일 없음'), 400
+    mid = uuid.uuid4().hex[:12]
+    ext = os.path.splitext(f.filename or '')[1].lower()
+    if not re.fullmatch(r'\.[a-z0-9]{1,6}', ext):
+        ext = '.bin'
+    path = os.path.join(MEDIA, mid + ext)
+    f.save(path)
+    try:
+        return jsonify(register_media(path, mid, ext, f.filename))
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
 
 
 @app.route('/media/<mid>')
@@ -533,6 +540,20 @@ def fades(vol, fi, fo, L):
     return f + f',volume={vol:.4f}'
 
 
+def subtitles_filter(src, dst, W, H, S):
+    """ffmpeg `subtitles` filter burning sub.srt (cwd) with the editor's font settings."""
+    fam = S.get('subFont') or 'Pretendard'
+    if fam not in FONT_FAMILIES:
+        fam = 'Pretendard'
+    fs = round(H * max(1.5, min(12.0, float(S.get('subSize', 3.5)))) / 100)
+    bold = 1 if S.get('subBold', True) else 0
+    bs = chr(92)
+    fdir = FONTS.replace(bs, '/').replace(':', bs + ':')
+    style = bs + ','
+    return (f"[{src}]subtitles=sub.srt:fontsdir='{fdir}':original_size={W}x{H}:"
+            f"force_style='FontName={fam}{style}Bold={bold}{style}FontSize={fs}{style}Outline=2{style}Shadow=0{style}MarginV={round(H * 0.06)}'[{dst}]")
+
+
 def run_export(job, P, burn):
     S = P['settings']
     W, H = int(S['W']) // 2 * 2, int(S['H']) // 2 * 2
@@ -673,16 +694,7 @@ def run_export(job, P, burn):
     if burn and P.get('subs'):
         with open(os.path.join(tmp, 'sub.srt'), 'w', encoding='utf-8') as f:
             f.write(make_srt(P['subs']))
-        fam = S.get('subFont') or 'Pretendard'
-        if fam not in FONT_FAMILIES:
-            fam = 'Pretendard'
-        fs = round(H * max(1.5, min(12.0, float(S.get('subSize', 3.5)))) / 100)
-        bold = 1 if S.get('subBold', True) else 0
-        bs = chr(92)
-        fdir = FONTS.replace(bs, '/').replace(':', bs + ':')
-        style = bs + ','
-        fc.append(f"[{vlabel}]subtitles=sub.srt:fontsdir='{fdir}':original_size={W}x{H}:"
-                  f"force_style='FontName={fam}{style}Bold={bold}{style}FontSize={fs}{style}Outline=2{style}Shadow=0{style}MarginV={round(H * 0.06)}'[vout]")
+        fc.append(subtitles_filter(vlabel, 'vout', W, H, S))
         vlabel = 'vout'
     script = os.path.join(tmp, 'graph.txt')
     with open(script, 'w', encoding='utf-8') as f:

@@ -24,3 +24,9 @@
 - 내보내기: `-loop 1` 이미지 입력 + `fade alpha` + overlay `enable=between(t,s,e)`, 슬라이드는 x 수식. 위치 계산(`run_export`)과 `updStickers()`(index.html)는 동일해야 함.
 - 기본 세트: 이름표(왼쪽 아래)+말씀 제목(오른쪽 위), 14~25초.
 - 의존성 추가: pillow
+
+## 자동 편집 (autopipe.py)
+- 구글 드라이브 데스크톱 동기화 폴더를 감시(`run_auto.bat`, `--watch`) → 새 영상마다 whisper 자막 → 성경 장절 언급(`REF_RE`) + 이어지는 낭독 구간만 자막 → 무음(에너지 기반, whisper 구간은 항상 보존) 컷 → `<폴더>/output/`에 `_편집.mp4`, `_말씀자막.srt`, `_리포트.txt`.
+- 인코딩은 `select/aselect` 단일 입력 패스(컷이 많아도 느려지지 않음). 편집기 `run_export`와는 별개 경로이고 자막 스타일만 `subtitles_filter()`를 공유.
+- 말씀 구간은 휴리스틱(장절 언급 후 절 수×15초 예산, 1.8초 이상 휴지/종결어미에서 종료)이라 리포트로 검수 필요. 성경 원문 대조는 하지 않음.
+- 처리 이력은 `data/auto_done.json`(파일명|크기). 구글 드라이브 API/커넥터는 사용하지 않음.
