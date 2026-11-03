@@ -102,6 +102,12 @@ video{width:100%;max-height:70vh;background:#000;border-radius:8px}
 <div id="bye" style="display:none;position:fixed;inset:0;z-index:50;background:var(--bg);align-items:center;justify-content:center;text-align:center;line-height:2"><div><div style="font-size:42px">👋</div><b style="font-size:18px">프로그램을 종료했습니다</b><br><span class="dim">이 창은 닫으셔도 됩니다.<br>다시 쓰려면 <b>run.bat</b>을 실행하세요.</span></div></div>
 <main>
 
+<section class="card" id="stale" style="display:none;border-color:var(--danger)">
+  <b style="color:var(--danger)">⚠ 프로그램(서버)이 옛 버전으로 실행 중입니다</b>
+  <div class="sm" style="margin-top:6px">화면은 새 버전인데 서버가 옛 버전이라 일부 기능(업데이트, 다시 말하기 삭제 등)이 동작하지 않습니다.<br>
+  <b>① 열려 있는 검은 창(run.bat)을 모두 닫고 ② 작업 관리자에서 python.exe가 남아 있으면 종료한 뒤 ③ run.bat을 다시 실행</b>하세요. (이전 창이 켜져 있으면 새 서버가 같은 번호를 못 잡아 옛 서버가 계속 응답합니다)</div>
+</section>
+
 <section class="card">
   <h2>설교 영상 자동 편집 <small>원고 맞춤 자막 + 무음 구간 컷</small></h2>
   <div class="guide">
@@ -292,6 +298,7 @@ function render(){
   if(!settingsBuilt) buildSettings();
   if(document.activeElement!==$('#folder')&&!$('#folder').dataset.dirty) $('#folder').value=S.settings.folder;
   $('#watch').checked=S.settings.watch;
+  $('#stale').style.display=(!S.ver||!S.settings.update_branch)?'block':'none';
   const fm=$('#folderMsg');
   if(!S.settings.folder){fm.textContent='폴더를 정해 주세요. [폴더 찾기]로 구글 드라이브 폴더를 고를 수 있습니다.';fm.style.color='var(--warn)'}
   else if(!S.folder_ok){fm.textContent='이 폴더를 찾을 수 없습니다. 경로를 확인하세요.';fm.style.color='var(--danger)'}
@@ -374,7 +381,7 @@ $('#mrClose').onclick=()=>$('#mReport').classList.remove('on');
 /* 업데이트 */
 const esc2=esc;
 async function checkUpdate(){
-  $('#muBody').innerHTML='확인하는 중…'; $('#muApply').disabled=true; $('#muBranch').value=S.settings.update_branch;
+  $('#muBody').innerHTML='확인하는 중…'; $('#muApply').disabled=true; $('#muBranch').value=S.settings.update_branch||'main-5cl93u';
   try{
     const r=await post('/api/update/check');
     const n=r.changed.length;
@@ -382,7 +389,7 @@ async function checkUpdate(){
       `<div class="sm" style="margin-top:10px">최근 변경 내용 <span class="dim">(${esc(r.branch)} · ${esc(r.short)})</span></div><ul style="margin:4px 0 0 18px;padding:0" class="sm dim">${r.notes.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
     $('#muApply').disabled=!n||r.busy; if(n&&r.busy) $('#muBody').innerHTML+='<div class="err">작업이 진행 중이라 지금은 업데이트할 수 없습니다. 끝난 뒤에 다시 시도하세요.</div>';
     return n;
-  }catch(e){ $('#muBody').innerHTML=`<div class="err">${esc(e.message)}</div>`; return 0 }
+  }catch(e){ $('#muBody').innerHTML=`<div class="err">${/404/.test(e.message)?'서버가 옛 버전이라 업데이트 기능이 없습니다. 열려 있는 검은 창(run.bat)을 모두 닫고 run.bat을 다시 실행하세요.':esc(e.message)}</div>`; return 0 }
 }
 $('#bUpdate').onclick=()=>{$('#mUpdate').classList.add('on');checkUpdate()};
 $('#muClose').onclick=()=>$('#mUpdate').classList.remove('on');

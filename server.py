@@ -805,6 +805,16 @@ if __name__ == '__main__':
     # 코드 파일이 바뀌면 서버가 스스로 다시 켜진다(작업 중이면 끝난 뒤). 끄려면 환경변수 NO_RELOAD=1
     use_reloader = not os.environ.get('NO_RELOAD')
     is_child = os.environ.get('WERKZEUG_RUN_MAIN') == 'true'  # 재시작 장치가 띄운 실제 서버 프로세스
+    if not is_child:  # 같은 프로그램이 이미 켜져 있으면(옛 검은 창 등) 새 서버가 조용히 실패하지 않도록 안내하고 끝낸다
+        try:
+            socket.create_connection(('127.0.0.1', port), 0.5).close()
+        except OSError:
+            pass
+        else:
+            print(f'\n[!] 프로그램이 이미 실행 중입니다 (127.0.0.1:{port}).\n'
+                  '    열려 있는 다른 검은 창(run.bat)을 모두 닫고 다시 실행하세요.\n'
+                  '    그래도 안 되면 작업 관리자에서 python.exe를 종료한 뒤 다시 실행하세요.\n')
+            sys.exit(1)
     if is_child or not use_reloader:
         autoweb.register(app)  # 작업/감시 스레드는 실제 서버 프로세스에서만 (감시 장치 프로세스에선 X)
     if not is_child:  # 브라우저는 맨 처음 한 번만 연다(재시작 때마다 열지 않음)
