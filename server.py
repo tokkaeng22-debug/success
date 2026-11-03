@@ -31,6 +31,10 @@ EXPORT_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------- helpers
+class Canceled(Exception):
+    """사용자가 작업 중지를 눌렀을 때 작업 스레드를 빠져나오기 위한 예외."""
+
+
 def run(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, creationflags=NOWIN, **kw)
 
@@ -135,6 +139,43 @@ COMPAT_V = {'h264', 'vp8', 'vp9', 'av1'}
 COMPAT_A = {'aac', 'mp3', 'opus', 'vorbis', 'flac', 'pcm_s16le', 'pcm_s24le', 'pcm_f32le', 'pcm_u8'}
 
 
+def register_media(path, mid, ext, filename, light=False):
+    """light=True: 편집기용 미리보기 변환/썸네일을 만들지 않는다(자동 편집은 원본만 읽으므로 불필요하고 오래 걸림)."""
+    h = hashlib.sha1()
+    with open(path, 'rb') as fh:
+        while True:
+            b = fh.read(1 << 20)
+            if not b:
+                break
+            h.update(b)
+    info = probe(path)
+    if not info['hasVideo'] and not info['hasAudio']:
+        os.remove(path)
+        raise ValueError('지원하지 않는 파일입니다')
+    m = dict(id=mid, name=filename, ext=ext, hash=h.hexdigest(), kind='video' if info['hasVideo'] else 'audio',
+             proxy=False, **info)
+    # browsers cannot play everything -> make a light preview copy
+    need = False
+    if not light and m['hasVideo'] and (m['vcodec'] not in COMPAT_V or ext not in ('.mp4', '.m4v', '.mov', '.webm')):
+        need = True
+    if not light and m['hasAudio'] and m['acodec'] not in COMPAT_A:
+        need = True
+    if need:
+        out = os.path.join(CACHE, mid + '_preview.mp4' if m['hasVideo'] else mid + '_preview.m4a')
+        if m['hasVideo']:
+            cmd = [FFMPEG, '-y', '-v', 'error', '-i', path, '-vf', 'scale=-2:min(720\\,ih)', '-c:v', 'libx264',
+                   '-preset', 'ultrafast', '-crf', '26', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', out]
+        else:
+            cmd = [FFMPEG, '-y', '-v', 'error', '-i', path, '-vn', '-c:a', 'aac', '-b:a', '160k', out]
+        if run(cmd).returncode == 0 and os.path.exists(out):
+            m['proxy'] = True
+    if m['hasVideo'] and not light:
+        run([FFMPEG, '-y', '-v', 'error', '-ss', str(min(1.0, m['duration'] / 2)), '-i', path, '-frames:v', '1',
+             '-vf', 'scale=-2:96', os.path.join(CACHE, mid + '.jpg')])
+    save_meta(m)
+    return m
+
+
 @app.route('/api/upload', methods=['POST'])
 def upload():
     f = request.files.get('file')
@@ -146,39 +187,10 @@ def upload():
         ext = '.bin'
     path = os.path.join(MEDIA, mid + ext)
     f.save(path)
-    h = hashlib.sha1()
-    with open(path, 'rb') as fh:
-        while True:
-            b = fh.read(1 << 20)
-            if not b:
-                break
-            h.update(b)
-    info = probe(path)
-    if not info['hasVideo'] and not info['hasAudio']:
-        os.remove(path)
-        return jsonify(error='지원하지 않는 파일입니다'), 400
-    m = dict(id=mid, name=f.filename, ext=ext, hash=h.hexdigest(), kind='video' if info['hasVideo'] else 'audio',
-             proxy=False, **info)
-    # browsers cannot play everything -> make a light preview copy
-    need = False
-    if m['hasVideo'] and (m['vcodec'] not in COMPAT_V or ext not in ('.mp4', '.m4v', '.mov', '.webm')):
-        need = True
-    if m['hasAudio'] and m['acodec'] not in COMPAT_A:
-        need = True
-    if need:
-        out = os.path.join(CACHE, mid + '_preview.mp4' if m['hasVideo'] else mid + '_preview.m4a')
-        if m['hasVideo']:
-            cmd = [FFMPEG, '-y', '-v', 'error', '-i', path, '-vf', 'scale=-2:min(720\\,ih)', '-c:v', 'libx264',
-                   '-preset', 'ultrafast', '-crf', '26', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', out]
-        else:
-            cmd = [FFMPEG, '-y', '-v', 'error', '-i', path, '-vn', '-c:a', 'aac', '-b:a', '160k', out]
-        if run(cmd).returncode == 0 and os.path.exists(out):
-            m['proxy'] = True
-    if m['hasVideo']:
-        run([FFMPEG, '-y', '-v', 'error', '-ss', str(min(1.0, m['duration'] / 2)), '-i', path, '-frames:v', '1',
-             '-vf', 'scale=-2:96', os.path.join(CACHE, mid + '.jpg')])
-    save_meta(m)
-    return jsonify(m)
+    try:
+        return jsonify(register_media(path, mid, ext, f.filename))
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
 
 
 @app.route('/media/<mid>')
@@ -251,7 +263,7 @@ def make_srt(subs):
     return '\n'.join(out)
 
 
-def run_transcribe(job, mid, lang, model_name):
+def run_transcribe(job, mid, lang, model_name, words=False, prompt=None):
     m = load_meta(mid)
     if not m['hasAudio']:
         raise RuntimeError('오디오가 없는 파일입니다')
@@ -267,7 +279,9 @@ def run_transcribe(job, mid, lang, model_name):
                                                cpu_threads=max(2, (os.cpu_count() or 4) - 1))
         model = _models[model_name]
         job['msg'] = '음성 분석 중…'
-        kw = dict(language=lang or None, beam_size=3, vad_filter=True)
+        kw = dict(language=lang or None, beam_size=3, vad_filter=True, word_timestamps=words)
+        if prompt:
+            kw['initial_prompt'] = prompt
         try:
             segs, info = model.transcribe(audio, **kw)
             it = iter(segs)
@@ -276,10 +290,16 @@ def run_transcribe(job, mid, lang, model_name):
             segs, info = model.transcribe(audio, **kw)
             it = iter(segs)
         out = []
+        ev = getattr(job, 'cancel', None)
         for sg in it:
+            if ev is not None and ev.is_set():
+                raise Canceled()
             t = sg.text.strip()
             if t:
-                out.append(dict(s=round(sg.start, 2), e=round(sg.end, 2), t=t))
+                o = dict(s=round(sg.start, 2), e=round(sg.end, 2), t=t)
+                if words:
+                    o['w'] = [[round(w.start, 2), round(w.end, 2), w.word, round(w.probability, 2)] for w in (sg.words or [])]
+                out.append(o)
             job['progress'] = min(0.99, sg.end / max(dur, 0.1))
         base = os.path.splitext(m['name'] or mid)[0]
         with open(os.path.join(SUBS, f'{mid}_{re.sub(r"[^0-9A-Za-z가-힣._-]", "_", base)}.srt'), 'w', encoding='utf-8') as f:
@@ -533,6 +553,44 @@ def fades(vol, fi, fo, L):
     return f + f',volume={vol:.4f}'
 
 
+def ass_time(t):
+    cs = int(round(max(0, t) * 100))
+    return f'{cs // 360000}:{cs // 6000 % 60:02d}:{cs // 100 % 60:02d}.{cs % 100:02d}'
+
+
+def subtitles_filter(src, dst, W, H, S, subs, tmp):
+    """자막을 sub.ass(tmp)로 쓰고 이를 입히는 ffmpeg 필터 문자열을 돌려준다.
+    PlayRes를 영상 해상도(W x H)로 고정해 글자 크기·여백이 실제 픽셀 기준(화면 높이 대비 %)이 되게 한다.
+    S: subFont, subSize(높이 %), subBold, subStyle('outline' 외곽선 | 'box' 흰 바탕+검은 글씨), subBottom(아래 여백 높이 %)."""
+    fam = S.get('subFont') or 'Pretendard'
+    if fam not in FONT_FAMILIES:
+        fam = 'Pretendard'
+    fs = max(8, round(H * max(1.5, min(12.0, float(S.get('subSize', 3.5)))) / 100))
+    bold = -1 if S.get('subBold', True) else 0
+    mv = round(H * max(0.0, min(40.0, float(S.get('subBottom', 6.0)))) / 100)
+    if S.get('subStyle') == 'box':  # BorderStyle 3: 외곽선 색이 글자 뒤 상자 색이 된다
+        prim, outl, bs, ol = '&H00000000', '&H00FFFFFF', 3, max(2, round(fs * 0.22))
+    else:
+        prim, outl, bs, ol = '&H00FFFFFF', '&H00000000', 1, max(1, round(fs / 18))
+    lines = ['[Script Info]', 'ScriptType: v4.00+', f'PlayResX: {W}', f'PlayResY: {H}', 'WrapStyle: 2',
+             'ScaledBorderAndShadow: yes', '', '[V4+ Styles]',
+             'Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,'
+             'Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,'
+             'MarginV,Encoding',
+             f'Style: Default,{fam},{fs},{prim},&H000000FF,{outl},&H00000000,{bold},0,0,0,100,100,0,0,{bs},{ol},0,2,'
+             f'{round(W * 0.05)},{round(W * 0.05)},{mv},1', '', '[Events]',
+             'Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text']
+    for c in subs:
+        txt = str(c['t']).replace('\\', '/').replace('{', '(').replace('}', ')').replace('\r', '')
+        txt = '\\N'.join(x.strip() for x in txt.split('\n') if x.strip())
+        lines.append(f"Dialogue: 0,{ass_time(c['s'])},{ass_time(max(c['e'], c['s'] + 0.05))},Default,,0,0,0,,{txt}")
+    with open(os.path.join(tmp, 'sub.ass'), 'w', encoding='utf-8-sig') as f:
+        f.write('\n'.join(lines) + '\n')
+    bs_ = chr(92)
+    fdir = FONTS.replace(bs_, '/').replace(':', bs_ + ':')
+    return f"[{src}]ass=sub.ass:fontsdir='{fdir}'[{dst}]"
+
+
 def run_export(job, P, burn):
     S = P['settings']
     W, H = int(S['W']) // 2 * 2, int(S['H']) // 2 * 2
@@ -671,18 +729,7 @@ def run_export(job, P, burn):
         fc.append(f"[{vlabel}][stk{j}]overlay=x='{xe}':y={y0:.1f}:enable='between(t,{s0:.3f},{e0:.3f})'[vs{j}]")
         vlabel = f'vs{j}'
     if burn and P.get('subs'):
-        with open(os.path.join(tmp, 'sub.srt'), 'w', encoding='utf-8') as f:
-            f.write(make_srt(P['subs']))
-        fam = S.get('subFont') or 'Pretendard'
-        if fam not in FONT_FAMILIES:
-            fam = 'Pretendard'
-        fs = round(H * max(1.5, min(12.0, float(S.get('subSize', 3.5)))) / 100)
-        bold = 1 if S.get('subBold', True) else 0
-        bs = chr(92)
-        fdir = FONTS.replace(bs, '/').replace(':', bs + ':')
-        style = bs + ','
-        fc.append(f"[{vlabel}]subtitles=sub.srt:fontsdir='{fdir}':original_size={W}x{H}:"
-                  f"force_style='FontName={fam}{style}Bold={bold}{style}FontSize={fs}{style}Outline=2{style}Shadow=0{style}MarginV={round(H * 0.06)}'[vout]")
+        fc.append(subtitles_filter(vlabel, 'vout', W, H, S, P['subs'], tmp))
         vlabel = 'vout'
     script = os.path.join(tmp, 'graph.txt')
     with open(script, 'w', encoding='utf-8') as f:
@@ -750,7 +797,42 @@ def srt():
 
 
 if __name__ == '__main__':
+    import socket
     import webbrowser
+    sys.modules.setdefault('server', sys.modules[__name__])  # autopipe/autoweb의 `import server`가 이 모듈을 그대로 쓰게 함
+    import autoweb
     port = 5173
-    threading.Timer(1.2, lambda: webbrowser.open(f'http://127.0.0.1:{port}')).start()
-    app.run(host='127.0.0.1', port=port, threaded=True)
+    # 코드 파일이 바뀌면 서버가 스스로 다시 켜진다(작업 중이면 끝난 뒤). 끄려면 환경변수 NO_RELOAD=1
+    use_reloader = not os.environ.get('NO_RELOAD')
+    is_child = os.environ.get('WERKZEUG_RUN_MAIN') == 'true'  # 재시작 장치가 띄운 실제 서버 프로세스
+    if not is_child:  # 같은 프로그램이 이미 켜져 있으면(옛 검은 창 등) 새 서버가 조용히 실패하지 않도록 안내하고 끝낸다
+        try:
+            socket.create_connection(('127.0.0.1', port), 0.5).close()
+        except OSError:
+            pass
+        else:
+            print(f'\n[!] 프로그램이 이미 실행 중입니다 (127.0.0.1:{port}).\n'
+                  '    열려 있는 다른 검은 창(run.bat)을 모두 닫고 다시 실행하세요.\n'
+                  '    그래도 안 되면 작업 관리자에서 python.exe를 종료한 뒤 다시 실행하세요.\n')
+            sys.exit(1)
+    if is_child or not use_reloader:
+        autoweb.register(app)  # 작업/감시 스레드는 실제 서버 프로세스에서만 (감시 장치 프로세스에선 X)
+    if not is_child:  # 브라우저는 맨 처음 한 번만 연다(재시작 때마다 열지 않음)
+        def open_when_ready():
+            for _ in range(300):
+                try:
+                    socket.create_connection(('127.0.0.1', port), 0.3).close()
+                    webbrowser.open(f'http://127.0.0.1:{port}')
+                    return
+                except OSError:
+                    time.sleep(0.3)
+        threading.Thread(target=open_when_ready, daemon=True).start()
+    opts = dict(host='127.0.0.1', port=port, threaded=True)
+    if use_reloader:
+        autoweb.defer_reload_while_busy()
+        opts.update(use_reloader=True, exclude_patterns=['*/site-packages/*', '*\\site-packages\\*', '*/venv/*', '*\\venv\\*'])
+    try:
+        app.run(**opts)
+    except TypeError:  # 오래된 Werkzeug는 exclude_patterns를 모름
+        opts.pop('exclude_patterns', None)
+        app.run(**opts)
