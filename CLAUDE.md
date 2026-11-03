@@ -2,6 +2,13 @@
 
 로컬 영상 편집기 (CapCut 벤치마킹). Flask 백엔드 + 단일 HTML 프런트엔드. 모든 AI(자막/음성분리)는 로컬 실행.
 
+## 작업 규칙 (사용자 요청 시)
+- 사용자가 **"success 저장소에 올려줘"**(비슷한 표현 포함)라고 하면: 변경된 파일을 커밋하고 **현재 작업 브랜치에 푸시**한다. 별도 확인을 되묻지 않는다.
+  - 커밋 전 `git status`로 확인: `data/`, `venv/`, `.env`, 테스트 산출물(영상·캐시)은 올리지 않는다.
+  - 작업 브랜치는 세션 지침이 정한 브랜치를 쓴다(지금까지는 `main-5cl93u`). main에 직접 푸시하지 않는다.
+  - 푸시 후 그 브랜치의 열린 PR이 없으면 draft PR을 만들고, 있으면 그대로 두되 내용이 달라졌으면 PR 본문만 갱신한다.
+  - 커밋 메시지 끝에는 세션 지침의 Co-Authored-By/Claude-Session 줄을 붙인다. 푸시 결과(커밋 해시)를 사용자에게 알려준다.
+
 ## 실행
 - `run.bat` 또는 `venv\Scripts\python.exe server.py` → http://127.0.0.1:5173
 - 첫 import가 느림(~30초). 서버 기동 후 접속 가능.
@@ -27,6 +34,7 @@
 
 ## 자동 편집 웹 화면 (/auto)
 - `http://127.0.0.1:5173/auto` — 폴더 선택/감시 토글/영상 목록/편집 시작/직접 올리기/설정(미리보기)/진행률/결과 영상·리포트 보기. `run.bat`(server.py) 하나로 편집기(`/`)와 함께 뜸. 상단 메뉴로 서로 이동.
+- 상단 `⏻ 프로그램 종료` 버튼 → `POST /api/shutdown`(Host/Origin이 127.0.0.1/localhost일 때만 허용). 작업 중이면 409 후 확인받아 force로 중지·정리 뒤 `os._exit`. run.bat의 Ctrl+C와 같은 효과.
 - `autoweb.py`: `register(app)`로 라우트 등록. 작업 대기열(워커 1개, whisper가 무거워 순차 처리) + 감시 스레드(`ap.ready_files`) + 설정 저장(`data/auto_settings.json`) + 폴더 탐색(`/api/auto/browse`) + 결과 파일 제공(`/api/auto/out/<video|srt|report>?name=<이름>`). 편집 자체는 `autopipe.process_file`(진행률 콜백 `progress`)이 수행.
 - `server.py`를 `python server.py`로 실행하면 `__main__`이라서 main 블록에서 `sys.modules.setdefault('server', ...)`를 먼저 해 둬야 autopipe/autoweb의 `import server`가 같은 모듈을 쓴다(두 번 import 금지).
 - `run_auto.bat`(CLI 감시)과 웹의 "새 영상 자동 처리"는 같은 장부(`data/auto_done.json`)를 쓰지만 동시에 켜면 중복 처리될 수 있으니 하나만 사용.

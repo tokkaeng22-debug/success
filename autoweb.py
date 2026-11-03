@@ -4,6 +4,7 @@
 - 실제 편집은 autopipe.process_file 이 한다. 여기서는 버튼으로 쓰기 위한 껍데기만 담당.
 """
 import os, re, json, time, string, threading, uuid, subprocess, traceback
+from urllib.parse import urlparse
 
 from flask import request, jsonify, send_file, send_from_directory, abort
 
@@ -23,6 +24,7 @@ ENUMS = dict(text_mode={'mixed', 'script', 'heard'}, subs_mode={'auto', 'all', '
 RANGES = dict(sub_width=(25, 95), sub_size=(2.0, 8.0), sub_bottom=(0.0, 20.0), silence=(0.3, 3.0), pad=(0.0, 1.0),
               wait_script=(0, 120), mix_thr=(0.1, 0.95))
 
+_exit = os._exit  # 테스트에서 바꿔 끼울 수 있게 별칭으로 둔다
 LOCK = threading.RLock()
 WAKE = threading.Condition(LOCK)
 TASKS = []  # 최신이 뒤. dict: id,name,path,script,outdir,key,state,progress,msg,log,result,error,created,started,finished
@@ -370,3 +372,35 @@ def register(app):
         except Exception as e:  # noqa
             return jsonify(error=f'폴더를 열 수 없습니다: {e}', path=d), 500
         return jsonify(ok=True, path=d)
+
+    def local_only():
+        """다른 웹사이트가 이 주소(127.0.0.1)로 몰래 요청을 보내는 것을 막는다(Host/Origin이 로컬일 때만 허용)."""
+        ok = ('127.0.0.1', 'localhost')
+        if request.host.split(':')[0] not in ok:
+            abort(403)
+        o = request.headers.get('Origin', '')
+        if o and urlparse(o).hostname not in ok:
+            abort(403)
+
+    @app.route('/api/shutdown', methods=['POST'])
+    def shutdown():
+        """프로그램(서버) 종료. 작업이 돌고 있으면 force가 있어야 하며, 중지 신호를 보내 정리한 뒤 끝낸다."""
+        local_only()
+        force = bool((request.get_json(silent=True) or {}).get('force'))
+        with LOCK:
+            active = [t for t in TASKS if t['state'] in ('queued', 'running')]
+            if active and not force:
+                return jsonify(error='작업이 진행 중입니다', busy=len(active)), 409
+            for t in active:
+                t['cancel'].set()
+                if t['state'] == 'queued':
+                    t['state'], t['msg'] = 'canceled', '종료로 취소됨'
+
+        def bye():
+            t0 = time.time()
+            while time.time() - t0 < 10 and any(t['state'] == 'running' for t in TASKS):
+                time.sleep(0.2)  # 복사본/임시 파일을 정리할 시간을 준다
+            time.sleep(0.4)
+            _exit(0)
+        threading.Thread(target=bye, daemon=True).start()
+        return jsonify(ok=True)

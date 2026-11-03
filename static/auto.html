@@ -96,7 +96,9 @@ video{width:100%;max-height:70vh;background:#000;border-radius:8px}
   <a href="/auto" class="on">🤖 설교 자동 편집</a>
   <span class="sp"></span>
   <span id="conn">● 연결됨</span>
+  <button id="bQuit" class="sm dng" title="프로그램(서버)을 완전히 끕니다">⏻ 프로그램 종료</button>
 </nav>
+<div id="bye" style="display:none;position:fixed;inset:0;z-index:50;background:var(--bg);align-items:center;justify-content:center;text-align:center;line-height:2"><div><div style="font-size:42px">👋</div><b style="font-size:18px">프로그램을 종료했습니다</b><br><span class="dim">이 창은 닫으셔도 됩니다.<br>다시 쓰려면 <b>run.bat</b>을 실행하세요.</span></div></div>
 <main>
 
 <section class="card">
@@ -319,7 +321,7 @@ async function poll(){
   try{ S=await api('/api/auto/state'); render() }
   catch(e){ $('#conn').textContent='● 연결 끊김 — 프로그램(run.bat)이 켜져 있는지 확인하세요'; $('#conn').className='bad' }
 }
-setInterval(poll,2000); poll();
+const pollTimer=setInterval(poll,2000); poll();
 
 /* ---------------- 동작 ---------------- */
 $('#folder').addEventListener('input',()=>$('#folder').dataset.dirty=1);
@@ -353,6 +355,19 @@ document.addEventListener('click',async e=>{
 $('#mvClose').onclick=()=>{$('#mvPlayer').pause();$('#mvPlayer').removeAttribute('src');$('#mVideo').classList.remove('on')};
 $('#mrClose').onclick=()=>$('#mReport').classList.remove('on');
 
+/* 프로그램 종료 */
+$('#bQuit').onclick=async()=>{
+  if(!confirm('프로그램을 종료할까요?\n종료하면 자동 처리도 멈춥니다.'))return;
+  try{
+    let r=await fetch('/api/shutdown',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    if(r.status===409){
+      if(!confirm('지금 처리 중인 작업이 있습니다.\n작업을 중지하고 종료할까요?\n(진행하던 내용은 버려집니다)'))return;
+      r=await fetch('/api/shutdown',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({force:true})});
+    }
+    if(!r.ok)throw new Error('종료하지 못했습니다');
+    clearInterval(pollTimer);$('#bye').style.display='flex';
+  }catch(e){toast(e.message,true)}
+};
 /* 폴더 찾기 */
 async function browse(p){
   try{
