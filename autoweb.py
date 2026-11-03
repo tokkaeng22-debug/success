@@ -18,7 +18,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 DEFAULTS = dict(folder='', out='', watch=False, text_mode='mixed', subs_mode='auto', sub_lines=1, sub_width=58.0,
                 sub_size=4.0, sub_bottom=4.0, sub_style='box', model='small', silence=0.8, pad=0.25,
-                wait_script=10, mix_thr=0.5, lang='ko')
+                wait_script=10, mix_thr=0.5, lang='ko', stumble=True)
 ENUMS = dict(text_mode={'mixed', 'script', 'heard'}, subs_mode={'auto', 'all', 'verse'}, sub_style={'box', 'outline'},
              model={'small', 'medium'}, sub_lines={1, 2})
 RANGES = dict(sub_width=(25, 95), sub_size=(2.0, 8.0), sub_bottom=(0.0, 20.0), silence=(0.3, 3.0), pad=(0.0, 1.0),
@@ -111,7 +111,7 @@ def enqueue(path, script, key, outdir):
 
 def process_opts(o):
     return dict(model=o['model'], lang=o['lang'], min_silence=o['silence'], pad=o['pad'], subs_mode=o['subs_mode'],
-                text_mode=o['text_mode'], mix_thr=o['mix_thr'], sub_lines=o['sub_lines'], sub_width=o['sub_width'],
+                text_mode=o['text_mode'], mix_thr=o['mix_thr'], sub_lines=o['sub_lines'], sub_width=o['sub_width'], fix_stumbles=o['stumble'],
                 sub_settings=dict(subSize=o['sub_size'], subBottom=o['sub_bottom'], subStyle=o['sub_style']))
 
 

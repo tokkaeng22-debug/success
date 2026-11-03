@@ -423,15 +423,15 @@ class _Job(dict):
             self._cb(self.get('msg', ''), self.get('progress', 0.0))
 
 
-def get_segments(mid, m, model, lang, words, log, on_progress=None, cancel=None):
+def get_segments(mid, m, model, lang, words, log, on_progress=None, cancel=None, prompt=None):
     """위스퍼 분석 결과를 영상 해시+모델별로 저장해 두고 재사용한다(재실행 시 오래 걸리지 않게)."""
-    cp = os.path.join(CACHE, f"tr_{m['hash']}_{model}_{'w' if words else 's'}.json")
+    cp = os.path.join(CACHE, f"tr_{m['hash']}_{model}_{'w' if words else 's'}{'d' if prompt else ''}.json")
     if os.path.exists(cp):
         log('  저장된 음성 분석 결과를 재사용합니다')
         with open(cp, encoding='utf-8') as f:
             return json.load(f)
     job = _Job(on_progress, cancel)
-    run_transcribe(job, mid, lang, model, words)
+    run_transcribe(job, mid, lang, model, words, prompt)
     segs = job['result']['subs']
     with open(cp, 'w', encoding='utf-8') as f:
         json.dump(segs, f, ensure_ascii=False)
@@ -439,16 +439,25 @@ def get_segments(mid, m, model, lang, words, log, on_progress=None, cancel=None)
 
 
 # ---------------------------------------------------------------- 무음 컷
-def speech_ranges(path, dur, segs, min_silence=0.8, pad=0.25):
-    """에너지 기반 무음 탐지. 위스퍼가 말한 구간은 항상 살린다(단어 시간이 있으면 단어 단위, 없으면 문장 단위).
-    반환: [(시작, 끝)] 초."""
+def frame_db(path):
+    """20ms 프레임별 음량(dB) 배열. 무음 탐지와 이어 붙일 지점(소리가 가장 작은 곳) 찾기에 쓴다."""
     pcm = decode_pcm(path, 16000, 1)
     fr = 320  # 20ms
     n = len(pcm) // fr
     if n == 0:
-        return [(0.0, dur)]
+        return np.zeros(0)
     rms = np.sqrt((pcm[:n * fr].reshape(n, fr) ** 2).mean(axis=1))
-    db = 20 * np.log10(rms + 1e-7)
+    return 20 * np.log10(rms + 1e-7)
+
+
+def speech_ranges(path, dur, segs, min_silence=0.8, pad=0.25, db=None):
+    """에너지 기반 무음 탐지. 위스퍼가 말한 구간은 항상 살린다(단어 시간이 있으면 단어 단위, 없으면 문장 단위).
+    반환: [(시작, 끝)] 초."""
+    if db is None:
+        db = frame_db(path)
+    n = len(db)
+    if n == 0:
+        return [(0.0, dur)]
     lo, hi = np.percentile(db, 10), np.percentile(db, 90)
     thr = float(np.clip(lo + 0.25 * (hi - lo), -55, -30))
     voiced = db > thr
@@ -480,6 +489,128 @@ def speech_ranges(path, dur, segs, min_silence=0.8, pad=0.25):
         elif b - a >= 0.3:
             out.append([a, b])
     return [(a, b) for a, b in out] or [(0.0, dur)]
+
+
+# ---------------------------------------------------------------- 말 더듬기 / 다시 말하기 자동 삭제
+# whisper는 더듬은 말을 "깨끗하게" 정리해서 받아 적는 경향이 있어, 인식 단계에서 더듬은 말을 남기도록 예시를 준다.
+DISFLUENT_PROMPT = '음, 그, 그래서 우리가, 그래서 우리가 하나님의, 아니 하나님께서 우리를 사랑하신다는 말씀입니다.'
+_COMPLETE_RE = re.compile(r'(다|요|죠|며|고|면|니까|는데|지만|으나|도록)$')
+
+
+def _eq(a, b):
+    """두 단어가 같거나(앞부분만 말하다 만 경우 포함) 아주 비슷한가."""
+    if a == b:
+        return True
+    s, l = (a, b) if len(a) <= len(b) else (b, a)
+    if len(s) >= 2 and l.startswith(s):
+        return True
+    return min(len(a), len(b)) >= 3 and difflib.SequenceMatcher(None, a, b).ratio() >= 0.75
+
+
+def find_stumbles(words, script_norm='', max_frag=14, max_span=9.0, max_gap=1.8):
+    """words=[(시작,끝,단어,확신도)]. 같은 말로 다시 시작한 곳을 찾아 앞쪽 시도(틀린 부분)의 단어 구간을 돌려준다.
+    보수적 규칙: 강조하려고 일부러 되풀이하는 말(문장이 끝난 뒤 반복, 병렬 구조, 원고에 두 번 적힌 말)은 건드리지 않는다.
+    반환: [dict(i, j, m, frag, keep)] — words[i:j]를 지운다."""
+    toks = [norm(w[2]) for w in words]
+    N, out, i = len(words), [], 0
+    while i < N - 1:
+        hit = None
+        if toks[i]:
+            for j in range(i + 1, min(N, i + 1 + max_frag)):
+                if words[j][0] - words[i][0] > max_span:
+                    break
+                if words[j][0] - words[j - 1][1] > max_gap or not toks[j]:
+                    continue
+                flen = j - i
+                m = 0
+                while m < flen and j + m < N and toks[i + m] and toks[j + m] and _eq(toks[i + m], toks[j + m]):
+                    m += 1
+                if not m:
+                    continue
+                tail = flen - m
+                last = toks[j - 1]
+                stutter = flen <= 2 and m == flen
+                if _COMPLETE_RE.search(last) and not (stutter and len(''.join(toks[i:j])) <= 3):
+                    continue  # 끝맺은 말 뒤의 반복 = 강조/병렬로 본다
+                k = j + flen - 1  # 앞 시도의 마지막 단어에 대응하는, 다시 말한 쪽 단어
+                weak = (words[j - 1][3] is not None and words[j - 1][3] < 0.5) or \
+                       (k < N and len(last) < len(toks[k]) and toks[k].startswith(last))
+                if not (stutter or (m >= 3 and tail <= 3) or (m >= 2 and tail <= 2 and weak)):
+                    continue
+                phrase = ''.join(toks[i:i + m])
+                if script_norm and len(phrase) >= 2 and phrase + phrase in script_norm:
+                    continue  # 원고에 같은 말이 연달아 적혀 있음 = 의도한 반복
+                hit = (j, m)
+                break
+        if hit:
+            j, m = hit
+            out.append(dict(i=i, j=j, m=m, frag=' '.join(w[2].strip() for w in words[i:j]),
+                            keep=' '.join(w[2].strip() for w in words[j:j + max(m, 3) + 2])))
+            i = j
+        else:
+            i += 1
+    return out
+
+
+def _valley(db, a, b):
+    """[a,b]초 사이에서 소리가 가장 작은 지점의 시각. 구간이 너무 좁으면 가운데."""
+    if len(db) == 0 or b - a < 0.06:
+        return (a + b) / 2
+    i0, i1 = max(0, int(a / 0.02)), min(len(db), int(b / 0.02) + 1)
+    if i1 - i0 < 2:
+        return (a + b) / 2
+    return (i0 + int(np.argmin(db[i0:i1]))) * 0.02 + 0.01
+
+
+def stumble_intervals(words, stumbles, db):
+    """찾은 구간을 실제로 잘라낼 시간 구간(초)으로 바꾼다. 말 사이 가장 조용한 지점에서 자른다."""
+    iv = []
+    for s in stumbles:
+        i, j = s['i'], s['j']
+        prev_end = words[i - 1][1] if i > 0 else max(0.0, words[i][0] - 0.2)
+        cs = _valley(db, min(prev_end, words[i][0]), words[i][0])
+        ce = _valley(db, min(words[j - 1][1], words[j][0]), words[j][0])
+        ce = min(ce, words[j][0] - 0.02)
+        if ce - cs >= 0.15:
+            iv.append((cs, ce))
+        s['t0'], s['t1'] = cs, ce
+    return iv
+
+
+def strip_words(segs, intervals):
+    """잘라낼 구간 안에 있는 단어를 위스퍼 결과에서 지운다(원고 맞춤·자막이 지워진 말에 붙지 않게)."""
+    def cut(x):
+        return any(a <= x <= b for a, b in intervals)
+    out = []
+    for sg in segs:
+        if not sg.get('w'):
+            out.append(sg)
+            continue
+        w = [x for x in sg['w'] if not cut((x[0] + x[1]) / 2)]
+        if not w:
+            continue
+        out.append(dict(sg, s=w[0][0], e=w[-1][1], t=' '.join(x[2].strip() for x in w), w=w))
+    return out
+
+
+def subtract_ranges(ranges, cuts):
+    """ranges(남길 구간)에서 cuts(잘라낼 구간)를 뺀다."""
+    out = []
+    for a, b in ranges:
+        parts = [(a, b)]
+        for ca, cb in cuts:
+            nxt = []
+            for x, y in parts:
+                if cb <= x or ca >= y:
+                    nxt.append((x, y))
+                    continue
+                if ca > x:
+                    nxt.append((x, ca))
+                if cb < y:
+                    nxt.append((cb, y))
+            parts = nxt
+        out += [(x, y) for x, y in parts if y - x >= 0.2]
+    return out
 
 
 def remap(t, ranges):
@@ -574,10 +705,11 @@ def fmt_t(t):
 
 
 def process_file(path, outdir, model='small', lang='ko', min_silence=0.8, pad=0.25, segs=None, script=None,
-                 subs_mode='auto', sub_settings=None, text_mode='mixed', mix_thr=0.5, sub_lines=1, sub_width=58.0, log=print, progress=None, cancel=None):
+                 subs_mode='auto', sub_settings=None, text_mode='mixed', mix_thr=0.5, sub_lines=1, sub_width=58.0, fix_stumbles=True, log=print, progress=None, cancel=None):
     """영상 1개 처리. script(docx/txt)가 있으면 원고 맞춤 자막, 없으면 장절 언급 기반 말씀 자막.
     subs_mode: auto(원고 있으면 all, 없으면 verse) / all(전체) / verse(말씀 구간만).
     text_mode: mixed(원고 글자 + 원고와 다르게 말한 곳은 AI가 들은 글자) / script(원고 글자만) / heard(AI가 들은 글자만).
+    fix_stumbles: 말을 더듬거나 틀려서 같은 말로 다시 시작한 곳을 찾아 앞쪽 시도를 잘라낸다.
     segs를 주면 위스퍼를 건너뛴다(테스트용). 반환: 결과 파일 경로 dict."""
     def P(msg, frac):
         if progress:
@@ -609,12 +741,23 @@ def process_file(path, outdir, model='small', lang='ko', min_silence=0.8, pad=0.
         maxc = max(10, int(m['w'] * sub_width / 100 / (0.67 * fs_px)))
         if segs is None:
             log(f'[{name}] 음성 분석 중… 영상 길이에 따라 오래 걸릴 수 있습니다 (25분 영상은 15~30분)')
-            segs = get_segments(mid, m, model, lang, bool(script) or text_mode == 'heard', log,
-                                lambda msg, v: P(msg or '음성 분석 중…', 0.05 + 0.65 * v), cancel)
+            segs = get_segments(mid, m, model, lang, bool(script) or text_mode == 'heard' or fix_stumbles, log,
+                                lambda msg, v: P(msg or '음성 분석 중…', 0.05 + 0.65 * v), cancel,
+                                DISFLUENT_PROMPT if fix_stumbles else None)
         if cancel is not None and cancel.is_set():
             raise Canceled()
         P('무음 구간 찾는 중…', 0.71)
-        ranges = speech_ranges(media_file(m), m['duration'], segs, min_silence, pad)
+        db = frame_db(media_file(m))
+        found, cuts_t = [], []
+        if fix_stumbles and any(sg.get('w') for sg in segs):
+            P('다시 말한 부분 찾는 중…', 0.72)
+            wl = transcript_words(segs)
+            found = find_stumbles(wl, norm(''.join(read_script(script))) if script else '')
+            cuts_t = stumble_intervals(wl, found, db)
+            segs = strip_words(segs, cuts_t)  # 지울 말은 원고 맞춤·자막 계산에서도 빼 둔다
+        ranges = speech_ranges(media_file(m), m['duration'], segs, min_silence, pad, db)
+        if cuts_t:
+            ranges = subtract_ranges(ranges, cuts_t)
         P('자막 만드는 중…', 0.73)
         rep = []
         if text_mode == 'heard':
@@ -671,6 +814,13 @@ def process_file(path, outdir, model='small', lang='ko', min_silence=0.8, pad=0.
                 rep.append(f'- {fmt_t(r["s"])}~{fmt_t(r["e"])}  {r["ref"]}'
                            f'{"" if r["hasVerse"] else "  (절 번호 없음: 해설일 수 있음)"}')
                 rep += [f'    {sg["t"]}' for sg in segs[r['first']:r['last'] + 1]]
+        if fix_stumbles:
+            if found:
+                tot = sum(s['t1'] - s['t0'] for s in found if 't0' in s)
+                rep.append(f'\n[말 더듬기·다시 말한 부분 {len(found)}곳 삭제 — 총 {tot:.1f}초 (원본 영상 시간). 잘못 잘렸으면 알려 주세요]')
+                rep += [f'  {fmt_t(s["t0"])}  지움: "{s["frag"]}"  →  이어지는 말: "{s["keep"]}"' for s in found if 't0' in s]
+            else:
+                rep.append('\n[말 더듬기·다시 말한 부분: 찾지 못함]  ※ 인식 단계에서 더듬은 말이 정리되어 안 보였을 수도 있습니다')
         W, H = m['w'] // 2 * 2, m['h'] // 2 * 2
         kept = sum(b - a for a, b in ranges)
         outp = os.path.join(outdir, f'{base}_편집.mp4')
@@ -685,7 +835,7 @@ def process_file(path, outdir, model='small', lang='ko', min_silence=0.8, pad=0.
             f.write('\n'.join(rep) + '\n')
         log(f'[{name}] 완료 → {outp}')
         P('완료', 1.0)
-        return dict(video=outp, srt=srt_p, report=rep_p, cuts=len(ranges), kept=kept, subs=len(subs))
+        return dict(video=outp, srt=srt_p, report=rep_p, cuts=len(ranges), kept=kept, subs=len(subs), stumbles=len(found))
     finally:  # 처리용 임시 복사본 정리
         for p_ in (dst, server.meta_path(mid)):
             try:
@@ -761,6 +911,7 @@ if __name__ == '__main__':
     ap.add_argument('--text', default='mixed', choices=['mixed', 'script', 'heard'],
                     help='자막 글자: mixed=원고 글자+원고와 다르게 말한 곳은 AI가 들은 글자 / script=원고만 / heard=AI가 들은 글자만')
     ap.add_argument('--mix-threshold', type=float, default=0.5, help='mixed에서 원고 글자를 쓰는 최소 일치율(0~1). 높일수록 AI 들은 글자를 더 자주 씀')
+    ap.add_argument('--no-stumble', action='store_true', help='말 더듬기/다시 말하기 자동 삭제를 끈다')
     ap.add_argument('--sub-lines', type=int, default=1, choices=[1, 2], help='자막 줄 수. 1: 길게 한 줄 / 2: 두 줄')
     ap.add_argument('--sub-width', type=float, default=58.0, help='한 줄 자막이 차지하는 폭(영상 너비 대비 %%). 강대상 너비에 맞춰 조절')
     ap.add_argument('--sub-size', type=float, default=4.0, help='자막 글자 크기(화면 높이 대비 %%). 작게: 3.5, 크게: 5')
@@ -772,7 +923,7 @@ if __name__ == '__main__':
     ap.add_argument('--wait-script', type=int, default=600, help='원고가 없을 때 올라오기를 기다리는 시간(초)')
     a = ap.parse_args()
     kw = dict(model=a.model, min_silence=a.silence, pad=a.pad, subs_mode=a.subs, text_mode=a.text, mix_thr=a.mix_threshold,
-              sub_lines=a.sub_lines, sub_width=a.sub_width,
+              sub_lines=a.sub_lines, sub_width=a.sub_width, fix_stumbles=not a.no_stumble,
               sub_settings=dict(subSize=a.sub_size, subBottom=a.sub_bottom, subStyle=a.sub_style))
     if a.file:
         process_file(a.file, a.out or os.path.join(os.path.dirname(os.path.abspath(a.file)), 'output'),

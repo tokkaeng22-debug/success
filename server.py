@@ -263,7 +263,7 @@ def make_srt(subs):
     return '\n'.join(out)
 
 
-def run_transcribe(job, mid, lang, model_name, words=False):
+def run_transcribe(job, mid, lang, model_name, words=False, prompt=None):
     m = load_meta(mid)
     if not m['hasAudio']:
         raise RuntimeError('오디오가 없는 파일입니다')
@@ -280,6 +280,8 @@ def run_transcribe(job, mid, lang, model_name, words=False):
         model = _models[model_name]
         job['msg'] = '음성 분석 중…'
         kw = dict(language=lang or None, beam_size=3, vad_filter=True, word_timestamps=words)
+        if prompt:
+            kw['initial_prompt'] = prompt
         try:
             segs, info = model.transcribe(audio, **kw)
             it = iter(segs)

@@ -215,6 +215,7 @@ const FIELDS=[
  ['g-text',{k:'subs_mode',label:'자막 범위',type:'sel',opts:[['auto','자동 (원고 있으면 전체)'],['all','전체'],['verse','성경 말씀 구간만']]}],
  ['g-text',{k:'mix_thr',label:'혼합 기준',type:'rng',min:0.1,max:0.95,step:0.05,fmt:v=>Math.round(v*100)+'%',help:'원고와 이 정도 이상 일치하면 원고 글자를 씁니다. 낮추면 원고 글자를 더 많이 씁니다.',show:s=>s.text_mode==='mixed'}],
  ['g-cut',{k:'silence',label:'무음 기준',type:'rng',min:0.3,max:3,step:0.1,fmt:v=>v.toFixed(1)+'초',help:'이 시간 이상 말이 없으면 잘라냅니다.'}],
+ ['g-cut',{k:'stumble',label:'다시 말하기 삭제',type:'chk',help:'말을 더듬거나 틀려서 같은 말로 다시 시작한 곳의 앞부분을 잘라냅니다. 강조하려고 되풀이한 말(끝맺은 말, 원고에 있는 반복)은 남깁니다. 어떤 부분을 잘랐는지는 리포트에서 확인하세요.'}],
  ['g-cut',{k:'pad',label:'말 앞뒤 여유',type:'rng',min:0,max:1,step:0.05,fmt:v=>v.toFixed(2)+'초',help:'잘라낼 때 말 앞뒤로 남기는 시간'}],
  ['g-ai',{k:'model',label:'인식 모델',type:'sel',opts:[['small','small — 빠름'],['medium','medium — 정확하지만 훨씬 느림']]}],
  ['g-ai',{k:'wait_script',label:'원고 대기',type:'num',min:0,max:120,help:'분. 원고 없이 올라온 영상을 이 시간 동안 원고를 기다린 뒤 처리합니다 (자동 처리 켰을 때).'}],
@@ -231,12 +232,13 @@ function buildSettings(){
     let ctl='';
     if(f.type==='sel') ctl=`<select data-k="${f.k}">${f.opts.map(o=>`<option value="${o[0]}">${esc(o[1])}</option>`).join('')}</select>`;
     else if(f.type==='rng') ctl=`<div class="rng"><input type="range" data-k="${f.k}" min="${f.min}" max="${f.max}" step="${f.step}"><output></output></div>`;
+    else if(f.type==='chk') ctl=`<label class="sw"><input type="checkbox" data-k="${f.k}"><span></span></label>`;
     else ctl=`<input type="number" data-k="${f.k}" min="${f.min}" max="${f.max}" style="width:90px">`;
     d.innerHTML=`<label>${f.label}</label>${ctl}${f.help?`<div class="help">${esc(f.help)}</div>`:''}`;
     $('#'+g).append(d);
     const el=d.querySelector('[data-k]');
     el.addEventListener('input',()=>{
-      let v=el.value; if(f.type!=='sel'||f.num) v=parseFloat(v); if(Number.isNaN(v)) return;
+      let v=el.value; if(f.type==='chk') v=el.checked; else if(f.type!=='sel'||f.num) v=parseFloat(v); if(Number.isNaN(v)) return;
       S.settings[f.k]=v; syncSettingsUI(); pending[f.k]=v; clearTimeout(saveT); saveT=setTimeout(flushSave,500);
     });
   }
@@ -246,7 +248,7 @@ function syncSettingsUI(){
   for(const [g,f] of FIELDS){
     const d=document.querySelector(`.fld[data-k="${f.k}"]`); if(!d) continue;
     const el=d.querySelector('[data-k]'), v=S.settings[f.k];
-    if(document.activeElement!==el) el.value=v;
+    if(f.type==='chk') el.checked=!!v; else if(document.activeElement!==el) el.value=v;
     const o=d.querySelector('output'); if(o) o.textContent=f.fmt(parseFloat(v));
     if(f.show) d.style.display=f.show(S.settings)?'':'none';
   }
