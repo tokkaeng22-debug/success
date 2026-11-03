@@ -788,6 +788,9 @@ def srt():
 
 if __name__ == '__main__':
     import webbrowser
+    sys.modules.setdefault('server', sys.modules[__name__])  # autopipe/autoweb의 `import server`가 이 모듈을 그대로 쓰게 함
+    import autoweb
+    autoweb.register(app)
     port = 5173
     threading.Timer(1.2, lambda: webbrowser.open(f'http://127.0.0.1:{port}')).start()
     app.run(host='127.0.0.1', port=port, threaded=True)

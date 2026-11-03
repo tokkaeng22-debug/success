@@ -409,14 +409,27 @@ def find_script(video_path):
     return None
 
 
-def get_segments(mid, m, model, lang, words, log):
+class _Job(dict):
+    """run_transcribe/encode가 갱신하는 job dict. 값이 바뀔 때마다 cb(msg, progress)를 부른다(웹 화면 진행률용)."""
+
+    def __init__(self, cb=None):
+        super().__init__(msg='', progress=0.0, result=None)
+        self._cb = cb
+
+    def __setitem__(self, k, v):
+        super().__setitem__(k, v)
+        if self._cb and k in ('progress', 'msg'):
+            self._cb(self.get('msg', ''), self.get('progress', 0.0))
+
+
+def get_segments(mid, m, model, lang, words, log, on_progress=None):
     """위스퍼 분석 결과를 영상 해시+모델별로 저장해 두고 재사용한다(재실행 시 오래 걸리지 않게)."""
     cp = os.path.join(CACHE, f"tr_{m['hash']}_{model}_{'w' if words else 's'}.json")
     if os.path.exists(cp):
         log('  저장된 음성 분석 결과를 재사용합니다')
         with open(cp, encoding='utf-8') as f:
             return json.load(f)
-    job = dict(msg='', progress=0.0, result=None)
+    job = _Job(on_progress)
     run_transcribe(job, mid, lang, model, words)
     segs = job['result']['subs']
     with open(cp, 'w', encoding='utf-8') as f:
@@ -522,11 +535,15 @@ def fmt_t(t):
 
 
 def process_file(path, outdir, model='small', lang='ko', min_silence=0.8, pad=0.25, segs=None, script=None,
-                 subs_mode='auto', sub_settings=None, text_mode='mixed', mix_thr=0.5, sub_lines=1, sub_width=58.0, log=print):
+                 subs_mode='auto', sub_settings=None, text_mode='mixed', mix_thr=0.5, sub_lines=1, sub_width=58.0, log=print, progress=None):
     """영상 1개 처리. script(docx/txt)가 있으면 원고 맞춤 자막, 없으면 장절 언급 기반 말씀 자막.
     subs_mode: auto(원고 있으면 all, 없으면 verse) / all(전체) / verse(말씀 구간만).
     text_mode: mixed(원고 글자 + 원고와 다르게 말한 곳은 AI가 들은 글자) / script(원고 글자만) / heard(AI가 들은 글자만).
     segs를 주면 위스퍼를 건너뛴다(테스트용). 반환: 결과 파일 경로 dict."""
+    def P(msg, frac):
+        if progress:
+            progress(msg, min(1.0, frac))
+
     os.makedirs(outdir, exist_ok=True)
     name = os.path.basename(path)
     base = re.sub(r'[\\/:*?"<>|]', '_', os.path.splitext(name)[0])
@@ -534,7 +551,9 @@ def process_file(path, outdir, model='small', lang='ko', min_silence=0.8, pad=0.
     ext = os.path.splitext(name)[1].lower()
     dst = os.path.join(MEDIA, mid + ext)
     log(f'[{name}] 복사 중…')
+    P('영상 복사 중…', 0.01)
     shutil.copy2(path, dst)
+    P('영상 확인 중…', 0.04)
     try:
         m = register_media(dst, mid, ext, name)
         if not m['hasVideo'] or not m['hasAudio']:
@@ -547,8 +566,11 @@ def process_file(path, outdir, model='small', lang='ko', min_silence=0.8, pad=0.
         maxc = max(10, int(m['w'] * sub_width / 100 / (0.67 * fs_px)))
         if segs is None:
             log(f'[{name}] 음성 분석 중… 영상 길이에 따라 오래 걸릴 수 있습니다 (25분 영상은 15~30분)')
-            segs = get_segments(mid, m, model, lang, bool(script) or text_mode == 'heard', log)
+            segs = get_segments(mid, m, model, lang, bool(script) or text_mode == 'heard', log,
+                                lambda msg, v: P(msg or '음성 분석 중…', 0.05 + 0.65 * v))
+        P('무음 구간 찾는 중…', 0.71)
         ranges = speech_ranges(media_file(m), m['duration'], segs, min_silence, pad)
+        P('자막 만드는 중…', 0.73)
         rep = []
         if text_mode == 'heard':
             log(f'[{name}] AI가 들은 글자로 자막을 만드는 중…')
@@ -608,7 +630,7 @@ def process_file(path, outdir, model='small', lang='ko', min_silence=0.8, pad=0.
         kept = sum(b - a for a, b in ranges)
         outp = os.path.join(outdir, f'{base}_편집.mp4')
         log(f'[{name}] 인코딩 중… ({m["duration"]:.0f}초 → {kept:.0f}초, 자막 {len(subs)}개)')
-        encode(media_file(m), ranges, subs, W, H, outp, dict(progress=0.0), sub_settings)
+        encode(media_file(m), ranges, subs, W, H, outp, _Job(lambda msg, v: P('영상 인코딩 중…', 0.75 + 0.24 * v)), sub_settings)
         srt_p = os.path.join(outdir, f'{base}_자막.srt')
         with open(srt_p, 'w', encoding='utf-8') as f:
             f.write(make_srt(subs))
@@ -617,6 +639,7 @@ def process_file(path, outdir, model='small', lang='ko', min_silence=0.8, pad=0.
             f.write(f'원본 {m["duration"]:.1f}초 → 편집 {kept:.1f}초 (무음 {m["duration"] - kept:.1f}초 제거, 컷 {len(ranges)}개)\n')
             f.write('\n'.join(rep) + '\n')
         log(f'[{name}] 완료 → {outp}')
+        P('완료', 1.0)
         return dict(video=outp, srt=srt_p, report=rep_p, cuts=len(ranges), kept=kept, subs=len(subs))
     finally:  # 처리용 임시 복사본 정리
         for p_ in (dst, server.meta_path(mid)):
@@ -635,37 +658,50 @@ def load_ledger():
         return {}
 
 
+def ready_files(folder, sizes, first_seen, done, wait_script=600):
+    """folder에서 지금 처리해도 되는 (영상경로, 원고경로|None, 장부키) 목록. 업로드/동기화 중(크기 변동)이거나
+    원고(docx)를 기다리는 중인 영상, 이미 처리한 영상은 건너뛴다."""
+    out = []
+    for fn in sorted(os.listdir(folder)):
+        p = os.path.join(folder, fn)
+        if fn.startswith('~$') or not os.path.isfile(p) or os.path.splitext(fn)[1].lower() not in VIDEO_EXT:
+            continue
+        sc = find_script(p)
+        cur = (os.path.getsize(p), os.path.getsize(sc) if sc else 0)
+        key = f'{fn}|{cur[0]}|{cur[1]}'
+        if key in done:
+            continue
+        if sizes.get(p) != cur:  # 크기가 안정될 때까지 한 번 더 확인
+            sizes[p] = cur
+            first_seen.setdefault(p, time.time())
+            continue
+        if not sc and time.time() - first_seen.get(p, 0) < wait_script:
+            continue  # 원고(docx)가 곧 올라올 수 있으니 잠시 기다림
+        out.append((p, sc, key))
+    return out
+
+
+def save_ledger(done):
+    with open(LEDGER, 'w', encoding='utf-8') as f:
+        json.dump(done, f, ensure_ascii=False, indent=1)
+
+
 def watch(folder, outdir, interval=15, wait_script=600, **kw):
     """folder를 감시. 영상과 같은 이름의 docx/txt가 있으면 원고 맞춤 자막. 원고가 아직 없으면 wait_script초 기다린다."""
     done = load_ledger()
     sizes, first_seen = {}, {}
     print(f'감시 시작: {folder}\n결과 폴더: {outdir}\n(종료: Ctrl+C)')
     while True:
-        for fn in sorted(os.listdir(folder)):
-            p = os.path.join(folder, fn)
-            if not os.path.isfile(p) or os.path.splitext(fn)[1].lower() not in VIDEO_EXT:
-                continue
-            sc = find_script(p)
-            key = f'{fn}|{os.path.getsize(p)}|{os.path.getsize(sc) if sc else 0}'
-            if key in done:
-                continue
-            cur = (os.path.getsize(p), os.path.getsize(sc) if sc else 0)
-            if sizes.get(p) != cur:  # 업로드/동기화 중: 크기가 안정될 때까지 대기
-                sizes[p] = cur
-                first_seen.setdefault(p, time.time())
-                continue
-            if not sc and time.time() - first_seen.get(p, 0) < wait_script:
-                continue  # 원고(docx)가 곧 올라올 수 있으니 잠시 기다림
+        for p, sc, key in ready_files(folder, sizes, first_seen, done, wait_script):
             try:
                 process_file(p, outdir, script=sc, **kw)
                 done[key] = time.strftime('%Y-%m-%d %H:%M:%S')
             except Exception as e:  # noqa
                 import traceback
                 traceback.print_exc()
-                print(f'[{fn}] 실패: {e}')
+                print(f'[{os.path.basename(p)}] 실패: {e}')
                 done[key] = f'실패: {e}'
-            with open(LEDGER, 'w', encoding='utf-8') as f:
-                json.dump(done, f, ensure_ascii=False, indent=1)
+            save_ledger(done)
         time.sleep(interval)
 
 

@@ -25,6 +25,13 @@
 - 기본 세트: 이름표(왼쪽 아래)+말씀 제목(오른쪽 위), 14~25초.
 - 의존성 추가: pillow
 
+## 자동 편집 웹 화면 (/auto)
+- `http://127.0.0.1:5173/auto` — 폴더 선택/감시 토글/영상 목록/편집 시작/직접 올리기/설정(미리보기)/진행률/결과 영상·리포트 보기. `run.bat`(server.py) 하나로 편집기(`/`)와 함께 뜸. 상단 메뉴로 서로 이동.
+- `autoweb.py`: `register(app)`로 라우트 등록. 작업 대기열(워커 1개, whisper가 무거워 순차 처리) + 감시 스레드(`ap.ready_files`) + 설정 저장(`data/auto_settings.json`) + 폴더 탐색(`/api/auto/browse`) + 결과 파일 제공(`/api/auto/out/<video|srt|report>?name=<이름>`). 편집 자체는 `autopipe.process_file`(진행률 콜백 `progress`)이 수행.
+- `server.py`를 `python server.py`로 실행하면 `__main__`이라서 main 블록에서 `sys.modules.setdefault('server', ...)`를 먼저 해 둬야 autopipe/autoweb의 `import server`가 같은 모듈을 쓴다(두 번 import 금지).
+- `run_auto.bat`(CLI 감시)과 웹의 "새 영상 자동 처리"는 같은 장부(`data/auto_done.json`)를 쓰지만 동시에 켜면 중복 처리될 수 있으니 하나만 사용.
+- 화면 수정 시 `static/auto.html`(단일 파일, 바닐라 JS). 폴더 경로는 브라우저가 알 수 없어 서버가 직접 탐색.
+
 ## 자동 편집 (autopipe.py)
 - 구글 드라이브 데스크톱 동기화 폴더를 감시(`run_auto.bat`, `--watch`) → 새 영상마다 whisper 분석 → 자막 → 무음 컷 → `<폴더>/output/`에 `_편집.mp4`, `_자막.srt`, `_리포트.txt`.
 - **원고 맞춤(권장)**: 영상과 같은 이름의 `.docx`/`.txt`(예: `0119설교.mp4` + `0119설교.docx`)가 있으면 원고 글자를 자막으로 쓰고 시간만 음성에서 가져옴(`read_script` → `make_cues` → `align_cues`). 원고가 없으면 `--wait-script`(기본 600초) 동안 올라오길 기다린 뒤 원고 없이 처리. 원고 추가/변경 시 장부 키가 달라져 재처리됨.
