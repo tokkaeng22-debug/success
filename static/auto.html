@@ -15,6 +15,7 @@ a{color:var(--ac)}
 button,.btn{font:inherit;color:var(--tx);background:var(--p3);border:1px solid var(--line);border-radius:8px;padding:7px 13px;cursor:pointer;text-decoration:none;display:inline-block}
 button:hover,.btn:hover{background:#323949}
 button.pri{background:var(--ac);color:#04222a;border-color:var(--ac);font-weight:700}button.pri:hover{background:#5ee3f5}
+button.dng:hover{background:#7f1d1d;border-color:var(--danger)}button.dng{border-color:#7f1d1d;color:#fecaca}
 button.sm,.btn.sm{padding:3px 9px;font-size:12px;border-radius:6px}
 button:disabled{opacity:.4;cursor:default}
 input,select{font:inherit;color:var(--tx);background:var(--p1);border:1px solid var(--line);border-radius:8px;padding:6px 9px;min-width:0}
@@ -48,7 +49,7 @@ td{padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
 tr:last-child td{border-bottom:0}
 .badge{display:inline-block;border-radius:10px;padding:1px 9px;font-size:12px;background:var(--p3);white-space:nowrap}
 .badge.done{background:#14532d;color:#bbf7d0}.badge.running{background:#164e63;color:#a5f3fc}
-.badge.queued{background:#422006;color:#fde68a}.badge.error{background:#7f1d1d;color:#fecaca}
+.badge.queued{background:#422006;color:#fde68a}.badge.canceled{background:#3f3f46;color:#d4d4d8}.badge.error{background:#7f1d1d;color:#fecaca}
 .bar{height:7px;background:var(--p3);border-radius:4px;overflow:hidden;margin-top:6px}
 .bar i{display:block;height:100%;background:var(--ac);transition:width .4s}
 .acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
@@ -270,7 +271,7 @@ function drawPreview(){
 window.addEventListener('resize',()=>S&&drawPreview());
 
 /* ---------------- 렌더 ---------------- */
-const STATE_TXT={new:'새 영상',queued:'대기 중',running:'처리 중',done:'완료',error:'실패',canceled:'취소됨'};
+const STATE_TXT={new:'새 영상',queued:'대기 중',running:'처리 중',done:'완료',error:'실패',canceled:'중지됨'};
 const mb=n=>n>=1e9?(n/1e9).toFixed(1)+' GB':(n/1e6).toFixed(0)+' MB';
 function render(){
   $('#conn').textContent='● 연결됨'; $('#conn').className='';
@@ -297,7 +298,8 @@ function render(){
     let ac='';
     if(f.has_out) ac+=`<button class="sm" data-act="video" data-name="${esc(f.base)}">▶ 결과 영상</button><button class="sm" data-act="report" data-name="${esc(f.base)}">📋 리포트</button><a class="btn sm" href="/api/auto/out/srt?name=${encodeURIComponent(f.base)}&dl=1">자막 SRT</a>`;
     if(f.state==='queued'&&t) ac+=`<button class="sm" data-act="cancel" data-id="${t.id}">취소</button>`;
-    else if(f.state!=='running') ac+=`<button class="sm ${f.has_out?'':'pri'}" data-act="run" data-path="${esc(f.path)}">${f.has_out?'↻ 다시 편집':'▶ 편집 시작'}</button>`;
+    else if(f.state==='running'&&t) ac+=t.cancel_req?`<button class="sm" disabled>중지하는 중…</button>`:`<button class="sm dng" data-act="stop" data-id="${t.id}">■ 중지</button>`;
+    else ac+=`<button class="sm ${f.has_out?'':'pri'}" data-act="run" data-path="${esc(f.path)}">${f.has_out?'↻ 다시 편집':'▶ 편집 시작'}</button>`;
     return `<tr><td>🎬 ${esc(f.name)}<div class="sm dim">${mb(f.size)}</div></td>
       <td>${f.script?`<span title="${esc(f.script)}">📄 있음</span><div class="sm dim">${esc(f.script)}</div>`:'<span class="dim">없음</span>'}</td>
       <td>${st}</td><td><div class="acts">${ac}</div></td></tr>`}).join('');
@@ -310,7 +312,7 @@ function render(){
     if(t.state==='running') extra=`<div class="bar"><i style="width:${t.progress*100}%"></i></div><div class="sm dim">${esc(t.msg)} · ${Math.round(t.progress*100)}%</div>`;
     if(t.state==='done'&&t.result) extra=`<div class="sm dim">${Math.round(t.result.kept)}초로 편집 · 컷 ${t.result.cuts}개 · 자막 ${t.result.subs}개</div>`;
     if(t.state==='error') extra=`<div class="err">${esc(t.error)}</div>`;
-    const ac=t.state==='done'?`<button class="sm" data-act="video" data-name="${esc(t.base)}">▶ 결과 영상</button><button class="sm" data-act="report" data-name="${esc(t.base)}">📋 리포트</button>`:(t.state==='queued'?`<button class="sm" data-act="cancel" data-id="${t.id}">취소</button>`:'');
+    const ac=t.state==='done'?`<button class="sm" data-act="video" data-name="${esc(t.base)}">▶ 결과 영상</button><button class="sm" data-act="report" data-name="${esc(t.base)}">📋 리포트</button>`:(t.state==='queued'?`<button class="sm" data-act="cancel" data-id="${t.id}">취소</button>`:(t.state==='running'?(t.cancel_req?`<button class="sm" disabled>중지하는 중…</button>`:`<button class="sm dng" data-act="stop" data-id="${t.id}">■ 중지</button>`):''));
     return `<div class="task"><div><b>${esc(t.name)}</b> ${b}${t.script?' <span class="sm dim">📄 원고 사용</span>':''}${extra}</div><div class="acts">${ac}</div></div>`}).join(''):'<div class="empty">아직 작업이 없습니다</div>';
 }
 async function poll(){
@@ -342,6 +344,7 @@ document.addEventListener('click',async e=>{
   try{
     if(a==='run'){await post('/api/auto/run',{path:b.dataset.path});toast('편집을 시작합니다');poll()}
     else if(a==='cancel'){await post('/api/auto/cancel',{id:b.dataset.id});poll()}
+    else if(a==='stop'){if(!confirm('이 작업을 중지할까요?\n지금까지 진행한 내용은 버려지고, 나중에 처음부터 다시 해야 합니다.\n(음성 분석이 끝난 뒤라면 저장돼 있어 다시 할 때 빠릅니다)'))return;await post('/api/auto/cancel',{id:b.dataset.id});toast('중지하는 중입니다…');poll()}
     else if(a==='video'){const n=encodeURIComponent(b.dataset.name);$('#mvTitle').textContent=b.dataset.name+'_편집.mp4';$('#mvPlayer').src='/api/auto/out/video?name='+n;$('#mvDl').href='/api/auto/out/video?name='+n+'&dl=1';$('#mVideo').classList.add('on')}
     else if(a==='report'){const n=encodeURIComponent(b.dataset.name);$('#mrTitle').textContent=b.dataset.name+'_리포트.txt';$('#mrDl').href='/api/auto/out/report?name='+n+'&dl=1';$('#mrText').textContent='불러오는 중…';$('#mReport').classList.add('on');
       const r=await fetch('/api/auto/out/report?name='+n);$('#mrText').textContent=await r.text()}

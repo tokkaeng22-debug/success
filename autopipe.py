@@ -15,7 +15,7 @@ import sys, os, re, json, time, argparse, shutil, subprocess, threading, uuid, z
 import numpy as np
 
 import server
-from server import FFMPEG, NOWIN, MEDIA, DATA, CACHE, EXPORTS, make_srt, subtitles_filter, register_media, \
+from server import Canceled, FFMPEG, NOWIN, MEDIA, DATA, CACHE, EXPORTS, make_srt, subtitles_filter, register_media, \
     decode_pcm, media_file, run_transcribe
 
 VIDEO_EXT = {'.mp4', '.mov', '.mkv', '.m4v', '.avi', '.webm', '.mts', '.m2ts'}
@@ -412,9 +412,10 @@ def find_script(video_path):
 class _Job(dict):
     """run_transcribe/encode가 갱신하는 job dict. 값이 바뀔 때마다 cb(msg, progress)를 부른다(웹 화면 진행률용)."""
 
-    def __init__(self, cb=None):
+    def __init__(self, cb=None, cancel=None):
         super().__init__(msg='', progress=0.0, result=None)
         self._cb = cb
+        self.cancel = cancel  # threading.Event: 켜지면 run_transcribe가 Canceled를 던진다
 
     def __setitem__(self, k, v):
         super().__setitem__(k, v)
@@ -422,14 +423,14 @@ class _Job(dict):
             self._cb(self.get('msg', ''), self.get('progress', 0.0))
 
 
-def get_segments(mid, m, model, lang, words, log, on_progress=None):
+def get_segments(mid, m, model, lang, words, log, on_progress=None, cancel=None):
     """위스퍼 분석 결과를 영상 해시+모델별로 저장해 두고 재사용한다(재실행 시 오래 걸리지 않게)."""
     cp = os.path.join(CACHE, f"tr_{m['hash']}_{model}_{'w' if words else 's'}.json")
     if os.path.exists(cp):
         log('  저장된 음성 분석 결과를 재사용합니다')
         with open(cp, encoding='utf-8') as f:
             return json.load(f)
-    job = _Job(on_progress)
+    job = _Job(on_progress, cancel)
     run_transcribe(job, mid, lang, model, words)
     segs = job['result']['subs']
     with open(cp, 'w', encoding='utf-8') as f:
@@ -493,8 +494,37 @@ def remap(t, ranges):
     return off
 
 
+def _rm(p):
+    try:
+        os.remove(p)
+    except OSError:
+        pass
+
+
+def copy_file(src, dst, on_frac=None, cancel=None, chunk=8 << 20):
+    """큰 영상(특히 구글 드라이브에서 내려받는 중인 파일)을 복사하며 진행률을 알리고, 중지 신호를 확인한다."""
+    total = max(os.path.getsize(src), 1)
+    done = 0
+    try:
+        with open(src, 'rb') as fi, open(dst, 'wb') as fo:
+            while True:
+                b = fi.read(chunk)
+                if not b:
+                    break
+                fo.write(b)
+                done += len(b)
+                if cancel is not None and cancel.is_set():
+                    raise Canceled()
+                if on_frac:
+                    on_frac(done / total)
+    except BaseException:
+        _rm(dst)
+        raise
+    shutil.copystat(src, dst)
+
+
 # ---------------------------------------------------------------- 인코딩 (select/aselect 단일 패스)
-def encode(src, ranges, subs, W, H, outp, job=None, sub_settings=None):
+def encode(src, ranges, subs, W, H, outp, job=None, sub_settings=None, cancel=None):
     tmp = os.path.join(EXPORTS, 'tmp_' + uuid.uuid4().hex[:8])
     os.makedirs(tmp, exist_ok=True)
     expr = '+'.join(f'between(t,{a:.3f},{b:.3f})' for a, b in ranges)
@@ -509,15 +539,19 @@ def encode(src, ranges, subs, W, H, outp, job=None, sub_settings=None):
         lab = 'vout'
     with open(os.path.join(tmp, 'graph.txt'), 'w', encoding='utf-8') as f:
         f.write(';\n'.join(fc))
+    part = outp + '.part'  # 끝까지 성공했을 때만 최종 이름으로 바꾼다(중지/실패 시 기존 결과를 망가뜨리지 않음)
     cmd = [FFMPEG, '-y', '-v', 'error', '-nostats', '-progress', 'pipe:1', '-i', src,
            '-filter_complex_script', 'graph.txt', '-map', f'[{lab}]', '-map', '[aout]',
            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
-           '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', outp]
+           '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', '-f', 'mp4', part]
     p = subprocess.Popen(cmd, cwd=tmp, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                          encoding='utf-8', errors='replace', creationflags=NOWIN)
     err = []
     threading.Thread(target=lambda: err.append(p.stderr.read()), daemon=True).start()
     for line in p.stdout:
+        if cancel is not None and cancel.is_set():
+            p.kill()
+            break
         if job is not None and line.startswith(('out_time_us=', 'out_time_ms=')):
             try:
                 job['progress'] = min(0.99, int(line.split('=')[1]) / 1e6 / max(total, 0.1))
@@ -525,8 +559,13 @@ def encode(src, ranges, subs, W, H, outp, job=None, sub_settings=None):
                 pass
     p.wait()
     shutil.rmtree(tmp, ignore_errors=True)
+    if cancel is not None and cancel.is_set():
+        _rm(part)
+        raise Canceled()
     if p.returncode != 0:
+        _rm(part)
         raise RuntimeError('ffmpeg 오류: ' + (err[0] if err else '')[-600:])
+    os.replace(part, outp)
 
 
 # ---------------------------------------------------------------- 전체 처리
@@ -535,7 +574,7 @@ def fmt_t(t):
 
 
 def process_file(path, outdir, model='small', lang='ko', min_silence=0.8, pad=0.25, segs=None, script=None,
-                 subs_mode='auto', sub_settings=None, text_mode='mixed', mix_thr=0.5, sub_lines=1, sub_width=58.0, log=print, progress=None):
+                 subs_mode='auto', sub_settings=None, text_mode='mixed', mix_thr=0.5, sub_lines=1, sub_width=58.0, log=print, progress=None, cancel=None):
     """영상 1개 처리. script(docx/txt)가 있으면 원고 맞춤 자막, 없으면 장절 언급 기반 말씀 자막.
     subs_mode: auto(원고 있으면 all, 없으면 verse) / all(전체) / verse(말씀 구간만).
     text_mode: mixed(원고 글자 + 원고와 다르게 말한 곳은 AI가 들은 글자) / script(원고 글자만) / heard(AI가 들은 글자만).
@@ -552,10 +591,14 @@ def process_file(path, outdir, model='small', lang='ko', min_silence=0.8, pad=0.
     dst = os.path.join(MEDIA, mid + ext)
     log(f'[{name}] 복사 중…')
     P('영상 복사 중…', 0.01)
-    shutil.copy2(path, dst)
+    try:
+        copy_file(path, dst, lambda f: P(f'영상 복사 중… {f * 100:.0f}%', 0.01 + 0.03 * f), cancel)
+    except BaseException:
+        _rm(dst)
+        raise
     P('영상 확인 중…', 0.04)
     try:
-        m = register_media(dst, mid, ext, name)
+        m = register_media(dst, mid, ext, name, light=True)
         if not m['hasVideo'] or not m['hasAudio']:
             raise RuntimeError('영상과 오디오가 모두 있는 파일이어야 합니다')
         if text_mode == 'heard':
@@ -567,7 +610,9 @@ def process_file(path, outdir, model='small', lang='ko', min_silence=0.8, pad=0.
         if segs is None:
             log(f'[{name}] 음성 분석 중… 영상 길이에 따라 오래 걸릴 수 있습니다 (25분 영상은 15~30분)')
             segs = get_segments(mid, m, model, lang, bool(script) or text_mode == 'heard', log,
-                                lambda msg, v: P(msg or '음성 분석 중…', 0.05 + 0.65 * v))
+                                lambda msg, v: P(msg or '음성 분석 중…', 0.05 + 0.65 * v), cancel)
+        if cancel is not None and cancel.is_set():
+            raise Canceled()
         P('무음 구간 찾는 중…', 0.71)
         ranges = speech_ranges(media_file(m), m['duration'], segs, min_silence, pad)
         P('자막 만드는 중…', 0.73)
@@ -630,7 +675,7 @@ def process_file(path, outdir, model='small', lang='ko', min_silence=0.8, pad=0.
         kept = sum(b - a for a, b in ranges)
         outp = os.path.join(outdir, f'{base}_편집.mp4')
         log(f'[{name}] 인코딩 중… ({m["duration"]:.0f}초 → {kept:.0f}초, 자막 {len(subs)}개)')
-        encode(media_file(m), ranges, subs, W, H, outp, _Job(lambda msg, v: P('영상 인코딩 중…', 0.75 + 0.24 * v)), sub_settings)
+        encode(media_file(m), ranges, subs, W, H, outp, _Job(lambda msg, v: P('영상 인코딩 중…', 0.75 + 0.24 * v)), sub_settings, cancel)
         srt_p = os.path.join(outdir, f'{base}_자막.srt')
         with open(srt_p, 'w', encoding='utf-8') as f:
             f.write(make_srt(subs))

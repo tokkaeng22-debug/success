@@ -8,7 +8,7 @@ import os, re, json, time, string, threading, uuid, subprocess, traceback
 from flask import request, jsonify, send_file, send_from_directory, abort
 
 import autopipe as ap
-from server import DATA
+from server import DATA, Canceled
 
 SETTINGS_PATH = os.path.join(DATA, 'auto_settings.json')
 UPLOAD_DIR = os.path.join(DATA, 'auto_in')
@@ -88,7 +88,7 @@ def folder_ok():
 # ---------------------------------------------------------------- 작업 대기열
 def pub(t):
     d = {k: t[k] for k in ('id', 'name', 'path', 'script', 'state', 'progress', 'msg', 'result', 'error', 'created',
-                           'started', 'finished', 'base')}
+                           'started', 'finished', 'base', 'cancel_req')}
     d['log'] = t['log'][-40:]
     return d
 
@@ -100,7 +100,8 @@ def enqueue(path, script, key, outdir):
                 return t
         t = dict(id=uuid.uuid4().hex[:8], name=os.path.basename(path), base=base_of(os.path.basename(path)),
                  path=path, script=script, outdir=outdir, key=key, state='queued', progress=0.0, msg='대기 중',
-                 log=[], result=None, error='', created=time.time(), started=0, finished=0, opts=dict(SETTINGS))
+                 log=[], result=None, error='', created=time.time(), started=0, finished=0, opts=dict(SETTINGS),
+                 cancel=threading.Event(), cancel_req=False)
         TASKS.append(t)
         WAKE.notify_all()
         return t
@@ -128,13 +129,19 @@ def worker():
             t['msg'], t['progress'] = msg, frac
 
         try:
-            res = ap.process_file(t['path'], t['outdir'], script=t['script'], log=log, progress=prog,
+            res = ap.process_file(t['path'], t['outdir'], script=t['script'], log=log, progress=prog, cancel=t['cancel'],
                                   **process_opts(t['opts']))
             t['result'] = {k: res[k] for k in ('video', 'srt', 'report', 'cuts', 'kept', 'subs')}
             t['state'], t['progress'], t['msg'] = 'done', 1.0, '완료'
             if t['key']:
                 done = ap.load_ledger()
                 done[t['key']] = time.strftime('%Y-%m-%d %H:%M:%S')
+                ap.save_ledger(done)
+        except Canceled:
+            t['state'], t['msg'] = 'canceled', '중지됨'
+            if t['key']:  # 폴더 감시가 곧바로 다시 시작하지 않도록 기록. 다시 하려면 목록의 [편집 시작]을 누른다
+                done = ap.load_ledger()
+                done[t['key']] = '중지됨'
                 ap.save_ledger(done)
         except Exception as e:  # noqa
             traceback.print_exc()
@@ -314,10 +321,16 @@ def register(app):
         tid = (request.get_json() or {}).get('id')
         with LOCK:
             for t in TASKS:
-                if t['id'] == tid and t['state'] == 'queued':
+                if t['id'] != tid:
+                    continue
+                if t['state'] == 'queued':
                     t['state'], t['msg'] = 'canceled', '취소됨'
                     return jsonify(ok=True)
-        return jsonify(error='대기 중인 작업만 취소할 수 있습니다(처리 중인 작업은 끝날 때까지 기다려 주세요)'), 400
+                if t['state'] == 'running':  # 복사/음성 분석/인코딩 중 어디서든 곧 멈춘다
+                    t['cancel'].set()
+                    t['cancel_req'], t['msg'] = True, '중지하는 중…'
+                    return jsonify(ok=True, stopping=True)
+        return jsonify(error='이미 끝났거나 찾을 수 없는 작업입니다'), 400
 
     @app.route('/api/auto/clear', methods=['POST'])
     def auto_clear():

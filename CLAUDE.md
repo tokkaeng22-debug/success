@@ -30,6 +30,8 @@
 - `autoweb.py`: `register(app)`로 라우트 등록. 작업 대기열(워커 1개, whisper가 무거워 순차 처리) + 감시 스레드(`ap.ready_files`) + 설정 저장(`data/auto_settings.json`) + 폴더 탐색(`/api/auto/browse`) + 결과 파일 제공(`/api/auto/out/<video|srt|report>?name=<이름>`). 편집 자체는 `autopipe.process_file`(진행률 콜백 `progress`)이 수행.
 - `server.py`를 `python server.py`로 실행하면 `__main__`이라서 main 블록에서 `sys.modules.setdefault('server', ...)`를 먼저 해 둬야 autopipe/autoweb의 `import server`가 같은 모듈을 쓴다(두 번 import 금지).
 - `run_auto.bat`(CLI 감시)과 웹의 "새 영상 자동 처리"는 같은 장부(`data/auto_done.json`)를 쓰지만 동시에 켜면 중복 처리될 수 있으니 하나만 사용.
+- 작업 중지: 작업마다 `threading.Event`(`cancel`)를 두고 복사(`copy_file`)·음성 분석(`run_transcribe` 루프의 `job.cancel`)·인코딩(`encode`에서 ffmpeg kill)이 확인해 `server.Canceled`를 던진다. 인코딩은 `<출력>.part`에 쓰고 성공해야 `os.replace`하므로 중지/실패해도 기존 결과가 안 망가짐. 중지한 작업은 장부에 `중지됨`으로 기록해 폴더 감시가 곧바로 재시작하지 않게 함(목록의 [편집 시작]으로 재시작). 모델 다운로드/로딩 중에는 끝날 때까지 못 멈춤.
+- 자동 편집은 `register_media(light=True)`로 편집기용 미리보기 변환·썸네일을 건너뜀(원본만 읽음).
 - 화면 수정 시 `static/auto.html`(단일 파일, 바닐라 JS). 폴더 경로는 브라우저가 알 수 없어 서버가 직접 탐색.
 
 ## 자동 편집 (autopipe.py)

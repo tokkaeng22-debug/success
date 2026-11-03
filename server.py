@@ -31,6 +31,10 @@ EXPORT_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------- helpers
+class Canceled(Exception):
+    """사용자가 작업 중지를 눌렀을 때 작업 스레드를 빠져나오기 위한 예외."""
+
+
 def run(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, creationflags=NOWIN, **kw)
 
@@ -135,7 +139,8 @@ COMPAT_V = {'h264', 'vp8', 'vp9', 'av1'}
 COMPAT_A = {'aac', 'mp3', 'opus', 'vorbis', 'flac', 'pcm_s16le', 'pcm_s24le', 'pcm_f32le', 'pcm_u8'}
 
 
-def register_media(path, mid, ext, filename):
+def register_media(path, mid, ext, filename, light=False):
+    """light=True: 편집기용 미리보기 변환/썸네일을 만들지 않는다(자동 편집은 원본만 읽으므로 불필요하고 오래 걸림)."""
     h = hashlib.sha1()
     with open(path, 'rb') as fh:
         while True:
@@ -151,9 +156,9 @@ def register_media(path, mid, ext, filename):
              proxy=False, **info)
     # browsers cannot play everything -> make a light preview copy
     need = False
-    if m['hasVideo'] and (m['vcodec'] not in COMPAT_V or ext not in ('.mp4', '.m4v', '.mov', '.webm')):
+    if not light and m['hasVideo'] and (m['vcodec'] not in COMPAT_V or ext not in ('.mp4', '.m4v', '.mov', '.webm')):
         need = True
-    if m['hasAudio'] and m['acodec'] not in COMPAT_A:
+    if not light and m['hasAudio'] and m['acodec'] not in COMPAT_A:
         need = True
     if need:
         out = os.path.join(CACHE, mid + '_preview.mp4' if m['hasVideo'] else mid + '_preview.m4a')
@@ -164,7 +169,7 @@ def register_media(path, mid, ext, filename):
             cmd = [FFMPEG, '-y', '-v', 'error', '-i', path, '-vn', '-c:a', 'aac', '-b:a', '160k', out]
         if run(cmd).returncode == 0 and os.path.exists(out):
             m['proxy'] = True
-    if m['hasVideo']:
+    if m['hasVideo'] and not light:
         run([FFMPEG, '-y', '-v', 'error', '-ss', str(min(1.0, m['duration'] / 2)), '-i', path, '-frames:v', '1',
              '-vf', 'scale=-2:96', os.path.join(CACHE, mid + '.jpg')])
     save_meta(m)
@@ -283,7 +288,10 @@ def run_transcribe(job, mid, lang, model_name, words=False):
             segs, info = model.transcribe(audio, **kw)
             it = iter(segs)
         out = []
+        ev = getattr(job, 'cancel', None)
         for sg in it:
+            if ev is not None and ev.is_set():
+                raise Canceled()
             t = sg.text.strip()
             if t:
                 o = dict(s=round(sg.start, 2), e=round(sg.end, 2), t=t)
