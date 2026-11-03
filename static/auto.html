@@ -96,6 +96,7 @@ video{width:100%;max-height:70vh;background:#000;border-radius:8px}
   <a href="/auto" class="on">🤖 설교 자동 편집</a>
   <span class="sp"></span>
   <span id="conn">● 연결됨</span>
+  <button id="bUpdate" class="sm" title="GitHub에서 새 버전을 확인하고 받아 옵니다">⬆ 업데이트</button>
   <button id="bQuit" class="sm dng" title="프로그램(서버)을 완전히 끕니다">⏻ 프로그램 종료</button>
 </nav>
 <div id="bye" style="display:none;position:fixed;inset:0;z-index:50;background:var(--bg);align-items:center;justify-content:center;text-align:center;line-height:2"><div><div style="font-size:42px">👋</div><b style="font-size:18px">프로그램을 종료했습니다</b><br><span class="dim">이 창은 닫으셔도 됩니다.<br>다시 쓰려면 <b>run.bat</b>을 실행하세요.</span></div></div>
@@ -193,6 +194,15 @@ video{width:100%;max-height:70vh;background:#000;border-radius:8px}
 <div class="modal" id="mReport"><div class="mbox">
   <header><b id="mrTitle"></b><a class="btn sm" id="mrDl" download>⬇ 내려받기</a><button class="sm" id="mrClose">닫기</button></header>
   <div class="mb"><pre class="rep" id="mrText"></pre></div>
+</div></div>
+
+<div class="modal" id="mUpdate"><div class="mbox">
+  <header><b>업데이트</b><button class="sm" id="muClose">닫기</button></header>
+  <div class="mb">
+    <div id="muBody" class="dim">확인하는 중…</div>
+    <div class="row"><span class="sm dim">받을 브랜치</span><input type="text" id="muBranch" style="flex:none;min-width:0;width:160px"><button class="sm" id="muRecheck">다시 확인</button><span style="flex:1"></span><button class="pri" id="muApply" disabled>지금 업데이트</button></div>
+    <div class="sm dim" style="margin-top:10px">바뀐 파일만 GitHub에서 받아 (원본과 대조·문법 검사 후) 적용하고, 기존 파일은 <code>data\update_backup</code>에 백업합니다. 적용하면 프로그램이 스스로 다시 켜지고 이 화면도 새로고침됩니다. 영상 처리 중에는 업데이트할 수 없습니다.</div>
+  </div>
 </div></div>
 
 <div id="toast"></div>
@@ -319,8 +329,12 @@ function render(){
     const ac=t.state==='done'?`<button class="sm" data-act="video" data-name="${esc(t.base)}">▶ 결과 영상</button><button class="sm" data-act="report" data-name="${esc(t.base)}">📋 리포트</button>`:(t.state==='queued'?`<button class="sm" data-act="cancel" data-id="${t.id}">취소</button>`:(t.state==='running'?(t.cancel_req?`<button class="sm" disabled>중지하는 중…</button>`:`<button class="sm dng" data-act="stop" data-id="${t.id}">■ 중지</button>`):''));
     return `<div class="task"><div><b>${esc(t.name)}</b> ${b}${t.script?' <span class="sm dim">📄 원고 사용</span>':''}${extra}</div><div class="acts">${ac}</div></div>`}).join(''):'<div class="empty">아직 작업이 없습니다</div>';
 }
+let verSeen=null, reloading=false;
 async function poll(){
-  try{ S=await api('/api/auto/state'); render() }
+  try{ S=await api('/api/auto/state'); render();
+    if(verSeen===null) verSeen=S.ver;
+    else if(S.ver!==verSeen&&!reloading){ reloading=true; toast('새 버전이 적용되었습니다. 화면을 새로고침합니다…'); setTimeout(()=>location.reload(),900) }
+  }
   catch(e){ $('#conn').textContent='● 연결 끊김 — 프로그램(run.bat)이 켜져 있는지 확인하세요'; $('#conn').className='bad' }
 }
 const pollTimer=setInterval(poll,2000); poll();
@@ -357,6 +371,27 @@ document.addEventListener('click',async e=>{
 $('#mvClose').onclick=()=>{$('#mvPlayer').pause();$('#mvPlayer').removeAttribute('src');$('#mVideo').classList.remove('on')};
 $('#mrClose').onclick=()=>$('#mReport').classList.remove('on');
 
+/* 업데이트 */
+const esc2=esc;
+async function checkUpdate(){
+  $('#muBody').innerHTML='확인하는 중…'; $('#muApply').disabled=true; $('#muBranch').value=S.settings.update_branch;
+  try{
+    const r=await post('/api/update/check');
+    const n=r.changed.length;
+    $('#muBody').innerHTML=(n?`<b style="color:var(--warn)">새 버전이 있습니다</b> — 바뀐 파일 ${n}개<div class="sm dim" style="margin:4px 0">${r.changed.map(esc).join(', ')}</div>`:`<b style="color:var(--ok)">✔ 최신 버전입니다</b> <span class="dim sm">(${esc(r.short)})</span>`)+
+      `<div class="sm" style="margin-top:10px">최근 변경 내용 <span class="dim">(${esc(r.branch)} · ${esc(r.short)})</span></div><ul style="margin:4px 0 0 18px;padding:0" class="sm dim">${r.notes.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
+    $('#muApply').disabled=!n||r.busy; if(n&&r.busy) $('#muBody').innerHTML+='<div class="err">작업이 진행 중이라 지금은 업데이트할 수 없습니다. 끝난 뒤에 다시 시도하세요.</div>';
+    return n;
+  }catch(e){ $('#muBody').innerHTML=`<div class="err">${esc(e.message)}</div>`; return 0 }
+}
+$('#bUpdate').onclick=()=>{$('#mUpdate').classList.add('on');checkUpdate()};
+$('#muClose').onclick=()=>$('#mUpdate').classList.remove('on');
+$('#muRecheck').onclick=async()=>{await post('/api/auto/settings',{update_branch:$('#muBranch').value.trim()});await poll();checkUpdate()};
+$('#muApply').onclick=async()=>{
+  $('#muApply').disabled=true; $('#muBody').innerHTML='받아서 적용하는 중…';
+  try{const r=await post('/api/update/apply'); $('#muBody').innerHTML=`<b style="color:var(--ok)">✔ 적용했습니다</b> — ${r.changed.length}개 파일. 프로그램이 다시 켜지는 중입니다…`; setTimeout(()=>$('#mUpdate').classList.remove('on'),2500)}
+  catch(e){$('#muBody').innerHTML=`<div class="err">${esc(e.message)}</div>`}
+};
 /* 프로그램 종료 */
 $('#bQuit').onclick=async()=>{
   if(!confirm('프로그램을 종료할까요?\n종료하면 자동 처리도 멈춥니다.'))return;

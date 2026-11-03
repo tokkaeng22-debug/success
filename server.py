@@ -797,10 +797,32 @@ def srt():
 
 
 if __name__ == '__main__':
+    import socket
     import webbrowser
     sys.modules.setdefault('server', sys.modules[__name__])  # autopipe/autoweb의 `import server`가 이 모듈을 그대로 쓰게 함
     import autoweb
-    autoweb.register(app)
     port = 5173
-    threading.Timer(1.2, lambda: webbrowser.open(f'http://127.0.0.1:{port}')).start()
-    app.run(host='127.0.0.1', port=port, threaded=True)
+    # 코드 파일이 바뀌면 서버가 스스로 다시 켜진다(작업 중이면 끝난 뒤). 끄려면 환경변수 NO_RELOAD=1
+    use_reloader = not os.environ.get('NO_RELOAD')
+    is_child = os.environ.get('WERKZEUG_RUN_MAIN') == 'true'  # 재시작 장치가 띄운 실제 서버 프로세스
+    if is_child or not use_reloader:
+        autoweb.register(app)  # 작업/감시 스레드는 실제 서버 프로세스에서만 (감시 장치 프로세스에선 X)
+    if not is_child:  # 브라우저는 맨 처음 한 번만 연다(재시작 때마다 열지 않음)
+        def open_when_ready():
+            for _ in range(300):
+                try:
+                    socket.create_connection(('127.0.0.1', port), 0.3).close()
+                    webbrowser.open(f'http://127.0.0.1:{port}')
+                    return
+                except OSError:
+                    time.sleep(0.3)
+        threading.Thread(target=open_when_ready, daemon=True).start()
+    opts = dict(host='127.0.0.1', port=port, threaded=True)
+    if use_reloader:
+        autoweb.defer_reload_while_busy()
+        opts.update(use_reloader=True, exclude_patterns=['*/site-packages/*', '*\\site-packages\\*', '*/venv/*', '*\\venv\\*'])
+    try:
+        app.run(**opts)
+    except TypeError:  # 오래된 Werkzeug는 exclude_patterns를 모름
+        opts.pop('exclude_patterns', None)
+        app.run(**opts)

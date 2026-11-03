@@ -3,13 +3,14 @@
 - 작업 대기열(한 번에 하나씩 처리: whisper가 무거움) + 폴더 감시 스레드 + 설정 저장(data/auto_settings.json)
 - 실제 편집은 autopipe.process_file 이 한다. 여기서는 버튼으로 쓰기 위한 껍데기만 담당.
 """
-import os, re, json, time, string, threading, uuid, subprocess, traceback
-from urllib.parse import urlparse
+import os, re, json, time, string, threading, uuid, subprocess, traceback, hashlib, shutil
+import urllib.request, urllib.error
+from urllib.parse import urlparse, quote
 
 from flask import request, jsonify, send_file, send_from_directory, abort
 
 import autopipe as ap
-from server import DATA, Canceled
+from server import DATA, BASE, Canceled
 
 SETTINGS_PATH = os.path.join(DATA, 'auto_settings.json')
 UPLOAD_DIR = os.path.join(DATA, 'auto_in')
@@ -18,7 +19,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 DEFAULTS = dict(folder='', out='', watch=False, text_mode='mixed', subs_mode='auto', sub_lines=1, sub_width=58.0,
                 sub_size=4.0, sub_bottom=4.0, sub_style='box', model='small', silence=0.8, pad=0.25,
-                wait_script=10, mix_thr=0.5, lang='ko', stumble=True)
+                wait_script=10, mix_thr=0.5, lang='ko', stumble=True, update_branch='main-5cl93u')
 ENUMS = dict(text_mode={'mixed', 'script', 'heard'}, subs_mode={'auto', 'all', 'verse'}, sub_style={'box', 'outline'},
              model={'small', 'medium'}, sub_lines={1, 2})
 RANGES = dict(sub_width=(25, 95), sub_size=(2.0, 8.0), sub_bottom=(0.0, 20.0), silence=(0.3, 3.0), pad=(0.0, 1.0),
@@ -60,6 +61,8 @@ def clean(d):
             continue
         if k in ENUMS and v not in ENUMS[k]:
             continue
+        if k == 'update_branch' and not re.fullmatch(r'[A-Za-z0-9._/-]{1,80}', v):
+            continue
         if k in RANGES:
             v = max(RANGES[k][0], min(RANGES[k][1], v))
         out[k] = v
@@ -85,6 +88,139 @@ def base_of(fn):
 
 def folder_ok():
     return bool(SETTINGS['folder']) and os.path.isdir(SETTINGS['folder'])
+
+
+# ---------------------------------------------------------------- 자동 적용: 서버 재시작 / 화면 새로고침 / 업데이트
+CODE_FILES = ('server.py', 'autopipe.py', 'autoweb.py', 'stickers.py', 'static/index.html', 'static/auto.html')
+
+
+def code_version():
+    """코드 파일의 수정 시각 묶음. 바뀌면 열려 있는 화면이 스스로 새로고침한다."""
+    h = hashlib.sha1()
+    for f in CODE_FILES:
+        try:
+            h.update(str(os.stat(os.path.join(BASE, *f.split('/'))).st_mtime_ns).encode())
+        except OSError:
+            pass
+    return h.hexdigest()[:10]
+
+
+def busy():
+    with LOCK:
+        return any(t['state'] in ('queued', 'running') for t in TASKS)
+
+
+def defer_reload_while_busy():
+    """Werkzeug 자동 재시작이 작업 도중에 서버를 끄지 않도록, 작업이 끝날 때까지 재시작을 미룬다."""
+    try:
+        from werkzeug import _reloader
+        orig = _reloader.ReloaderLoop.trigger_reload
+        if getattr(orig, '_deferred', False):
+            return
+
+        def patched(self, filename):
+            while busy():
+                time.sleep(2)
+            orig(self, filename)
+        patched._deferred = True
+        _reloader.ReloaderLoop.trigger_reload = patched
+    except Exception:  # noqa  (Werkzeug 내부 구조가 다르면 기본 동작 유지)
+        pass
+
+
+UPDATE_REPO = 'tokkaeng22-debug/success'
+UPDATE_ALLOW = re.compile(r'^(?:[^/]+\.py|CLAUDE\.md|agent\.md|static/[^/]+|fonts/[^/]+)$')  # .bat, data/, venv/, models/ 는 건드리지 않음
+UPDATE_NEED = ('server.py', 'autopipe.py', 'autoweb.py', 'static/index.html', 'static/auto.html')
+BACKUP_DIR = os.path.join(DATA, 'update_backup')
+
+
+def _get(url, as_json=True, limit=60 << 20):
+    req = urllib.request.Request(url, headers={'User-Agent': 'sermon-editor-updater', 'Accept': 'application/vnd.github+json'})
+    try:
+        with urllib.request.urlopen(req, timeout=25) as r:
+            data = r.read(limit + 1)
+    except urllib.error.HTTPError as e:
+        if e.code in (403, 429):
+            raise RuntimeError('GitHub 요청 한도에 걸렸습니다. 잠시(약 1시간) 뒤에 다시 시도하세요')
+        if e.code == 404:
+            raise RuntimeError('GitHub에서 해당 브랜치/파일을 찾을 수 없습니다')
+        raise RuntimeError(f'GitHub 오류 {e.code}')
+    except (urllib.error.URLError, OSError) as e:
+        raise RuntimeError(f'인터넷에 연결할 수 없습니다: {getattr(e, "reason", e)}')
+    if len(data) > limit:
+        raise RuntimeError('받은 파일이 너무 큽니다')
+    return json.loads(data) if as_json else data
+
+
+def blob_sha(data):
+    return hashlib.sha1(b'blob %d\0' % len(data) + data).hexdigest()
+
+
+def update_check(branch):
+    """GitHub 최신 커밋과 내 PC 파일을 비교한다(파일 해시 기준). 반환: dict(latest, msg, changed[], notes[])"""
+    c = _get(f'https://api.github.com/repos/{UPDATE_REPO}/commits/{quote(branch, safe="")}')
+    sha, msg = c['sha'], c['commit']['message'].split('\n')[0]
+    tree = _get(f'https://api.github.com/repos/{UPDATE_REPO}/git/trees/{sha}?recursive=1')
+    changed, files = [], {}
+    for e in tree.get('tree', []):
+        p = e.get('path', '')
+        if e.get('type') != 'blob' or not UPDATE_ALLOW.match(p) or any(s in ('', '.', '..') or s.startswith('.') for s in p.split('/')):
+            continue
+        files[p] = e['sha']
+        lp = os.path.join(BASE, *p.split('/'))
+        try:
+            with open(lp, 'rb') as f:
+                same = blob_sha(f.read()) == e['sha']
+        except OSError:
+            same = False
+        if not same:
+            changed.append(p)
+    try:
+        recent = _get(f'https://api.github.com/repos/{UPDATE_REPO}/commits?sha={quote(branch, safe="")}&per_page=6')
+        notes = [x['commit']['message'].split('\n')[0] for x in recent]
+    except RuntimeError:
+        notes = []
+    return dict(latest=sha, short=sha[:7], msg=msg, changed=changed, notes=notes, branch=branch, files=files)
+
+
+def update_apply(branch):
+    """바뀐 파일만 받아서(해시 검증 + 문법 검사) 백업 후 덮어쓴다. 서버는 파일이 바뀐 것을 보고 스스로 다시 켜진다."""
+    if busy():
+        raise RuntimeError('작업이 진행 중입니다. 끝난 뒤에 업데이트하세요')
+    info = update_check(branch)
+    if not info['changed']:
+        return dict(changed=[], short=info['short'], msg=info['msg'])
+    sha, new = info['latest'], {}
+    for p in info['changed']:
+        data = _get(f'https://raw.githubusercontent.com/{UPDATE_REPO}/{sha}/{quote(p)}', as_json=False)
+        if blob_sha(data) != info['files'][p]:
+            raise RuntimeError(f'받은 파일이 GitHub 원본과 다릅니다({p}). 업데이트를 중단했습니다')
+        if p.endswith('.py'):
+            try:
+                compile(data, p, 'exec')  # 실행하지 않고 문법만 검사
+            except SyntaxError as e:
+                raise RuntimeError(f'새 버전에 문법 오류가 있어 적용하지 않았습니다({p}: {e.msg})')
+        new[p] = data
+    for p in UPDATE_NEED:
+        if p not in new and not os.path.exists(os.path.join(BASE, *p.split('/'))):
+            raise RuntimeError(f'필수 파일({p})이 없어 적용하지 않았습니다')
+    ts = time.strftime('%Y%m%d_%H%M%S')
+    for p, data in new.items():
+        lp = os.path.join(BASE, *p.split('/'))
+        if os.path.exists(lp):
+            bp = os.path.join(BACKUP_DIR, ts, *p.split('/'))
+            os.makedirs(os.path.dirname(bp), exist_ok=True)
+            shutil.copy2(lp, bp)
+        os.makedirs(os.path.dirname(lp), exist_ok=True)
+        with open(lp + '.new', 'wb') as f:
+            f.write(data)
+        os.replace(lp + '.new', lp)
+    try:  # 백업은 최근 3번만 보관
+        for d in sorted(os.listdir(BACKUP_DIR))[:-3]:
+            shutil.rmtree(os.path.join(BACKUP_DIR, d), ignore_errors=True)
+    except OSError:
+        pass
+    return dict(changed=sorted(new), short=info['short'], msg=info['msg'], backup=ts)
 
 
 # ---------------------------------------------------------------- 작업 대기열
@@ -256,7 +392,7 @@ def register(app):
     def auto_state():
         with LOCK:
             return jsonify(settings=SETTINGS, defaults=DEFAULTS, folder_ok=folder_ok(), out_dir=out_dir(),
-                           files=list_files(), tasks=[pub(t) for t in TASKS][-30:],
+                           files=list_files(), tasks=[pub(t) for t in TASKS][-30:], ver=code_version(),
                            busy=any(t['state'] in ('queued', 'running') for t in TASKS))
 
     @app.route('/api/auto/settings', methods=['POST'])
@@ -404,3 +540,22 @@ def register(app):
             _exit(0)
         threading.Thread(target=bye, daemon=True).start()
         return jsonify(ok=True)
+
+    @app.route('/api/update/check', methods=['POST'])
+    def update_check_route():
+        local_only()
+        try:
+            r = update_check(SETTINGS['update_branch'])
+        except RuntimeError as e:
+            return jsonify(error=str(e)), 502
+        r.pop('files')
+        r['busy'] = busy()
+        return jsonify(r)
+
+    @app.route('/api/update/apply', methods=['POST'])
+    def update_apply_route():
+        local_only()
+        try:
+            return jsonify(ok=True, **update_apply(SETTINGS['update_branch']))
+        except RuntimeError as e:
+            return jsonify(error=str(e)), 409 if busy() else 502
