@@ -36,7 +36,7 @@ header .logo{font-weight:800;color:var(--ac);font-size:15px;margin-right:10px}
 #left{border-right:1px solid var(--line);display:flex;flex-direction:column}
 #right{border-left:1px solid var(--line);padding:8px}
 .tabs{display:flex;border-bottom:1px solid var(--line);flex:none}
-.tabs button{flex:1;border:0;border-radius:0;background:transparent;padding:9px 4px;color:var(--dim)}
+.tabs button{flex:1 1 auto;white-space:nowrap;border:0;border-radius:0;background:transparent;padding:9px 6px;color:var(--dim)}
 .tabs button.on{color:var(--ac);background:var(--p2);box-shadow:inset 0 -2px var(--ac)}
 .tabbody{flex:1;overflow:auto;padding:8px;min-height:0}
 .hbtns{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
@@ -53,16 +53,18 @@ header .logo{font-weight:800;color:var(--ac);font-size:15px;margin-right:10px}
 #center{display:flex;flex-direction:column;min-width:0;min-height:0;background:#0b0d11}
 #stage{flex:1;display:flex;align-items:center;justify-content:center;min-height:0;position:relative;padding:10px}
 #frame{position:relative;background:#000;overflow:hidden;box-shadow:0 0 0 1px var(--line);touch-action:none;cursor:move}
-#stkLayer{position:absolute;inset:0;pointer-events:none;overflow:hidden}
-#stkLayer img{position:absolute;display:none}
+#stkLayer{position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:1}
+#stkLayer img{position:absolute;display:none;z-index:2}
+#stkLayer img.im{z-index:1}
 .row.srow{height:28px;margin-top:4px}
 .stk{position:absolute;top:0;bottom:0;border-radius:6px;background:#8b5cf6;overflow:hidden;cursor:grab;border:2px solid transparent;user-select:none}
 .stk.sel{border-color:#fff}
+.stk.im{background:#0e7490 center/auto 100% repeat-x}
 #vwrap{position:absolute;transform-origin:center;pointer-events:none}
 #vid{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
 #roiBox{position:absolute;border:2px dashed #ffd43b;border-radius:50%;display:none;box-shadow:0 0 0 1px #0008}
 #bpImg{width:100%;border-radius:6px;background:#000;min-height:30px}
-#subOv{position:absolute;left:5%;right:5%;bottom:6%;text-align:center;color:#fff;line-height:1.25;text-shadow:0 0 4px #000,0 0 4px #000,0 0 3px #000;pointer-events:none;white-space:pre-wrap}
+#subOv{z-index:2;position:absolute;left:5%;right:5%;bottom:6%;text-align:center;color:#fff;line-height:1.25;text-shadow:0 0 4px #000,0 0 4px #000,0 0 3px #000;pointer-events:none;white-space:pre-wrap}
 #empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--dim);text-align:center;pointer-events:none}
 #transport{display:flex;align-items:center;justify-content:center;gap:8px;padding:6px;border-top:1px solid var(--line);background:var(--p1)}
 #transport .tm{font-variant-numeric:tabular-nums;min-width:150px;text-align:center;color:var(--ac)}
@@ -125,14 +127,16 @@ header .logo{font-weight:800;color:var(--ac);font-size:15px;margin-right:10px}
 </header>
 
 <aside id="left" class="panel">
-  <div class="tabs"><button data-t="media" class="on">미디어</button><button data-t="subs">자막</button><button data-t="sep">음성 분리</button><button data-t="stk">스티커</button></div>
+  <div class="tabs"><button data-t="media" class="on">미디어</button><button data-t="subs">자막</button><button data-t="sep">음성 분리</button><button data-t="stk">스티커·이미지</button></div>
   <div class="tabbody" id="tab-media">
     <div class="hbtns">
-      <button class="pri" id="bAdd">＋ 영상 / 음악 추가</button>
+      <button class="pri" id="bAdd">＋ 영상 / 음악 / 이미지</button>
       <button id="bClean" title="타임라인에서 쓰지 않는 미디어를 프로젝트에서 제거">🧹 미사용 정리</button>
     </div>
-    <div id="drop">여기로 파일을 끌어다 놓거나 클릭하세요<br><small>여러 개 가능 · 영상 / 음악 / 음성</small></div>
-    <input type="file" id="file" multiple accept="video/*,audio/*,.mkv,.avi,.mov,.flv,.wmv,.m4a,.aac,.flac" hidden>
+    <div id="drop">여기로 파일을 끌어다 놓거나 클릭하세요<br><small>여러 개 가능 · 영상 / 음악 / 음성 / 이미지(PNG·JPG)</small></div>
+    <input type="file" id="file" multiple accept="video/*,audio/*,image/png,image/jpeg,image/webp,.mkv,.avi,.mov,.flv,.wmv,.m4a,.aac,.flac" hidden>
+    <input type="file" id="fileImg" multiple accept="image/png,image/jpeg,image/webp" hidden>
+    <input type="file" id="fileSrt" accept=".srt,.vtt,text/plain" hidden>
     <div id="mlist"></div>
     <p class="hint" id="mhint">파일 선택 후 <b>Del</b> = 프로젝트에서 제거 (디스크 원본은 삭제되지 않음)<br>더블클릭 = 타임라인에 추가</p>
   </div>
@@ -249,7 +253,11 @@ function timelineSubs(){
 let upQ=0;
 function uploadFiles(files){
   files=[...files];if(!files.length)return;
-  (async()=>{for(const f of files)await uploadOne(f)})();
+  const isImg=f=>/^image\//.test(f.type)||/\.(png|jpe?g|webp)$/i.test(f.name);
+  const imgs=files.filter(isImg),rest=files.filter(f=>!isImg(f));
+  (async()=>{
+    if(imgs.length)await uploadImages(imgs);
+    for(const f of rest)await uploadOne(f)})();
 }
 function uploadOne(f){
   return new Promise(res=>{
@@ -561,9 +569,11 @@ function renderTimeline(){
   if(!P.tracks.length){const r=h('div','row arow');const e=h('div','hint','음악/음성 트랙 — 🎵 음악 추가 버튼 또는 오디오 파일의 ＋');e.style.cssText='position:absolute;left:12px;top:10px';r.append(e);rows.append(r)}
   P.stickers.forEach(st=>{
     const r=h('div','row srow'),ln=h('div','lane');r.append(ln);
-    const el=h('div','stk'+(sel&&sel.id===st.id?' sel':''));el.dataset.id=st.id;
+    const im=st.kind==='image';
+    const el=h('div','stk'+(im?' im':'')+(sel&&sel.id===st.id?' sel':''));el.dataset.id=st.id;
     el.style.left=st.start*zoom+'px';el.style.width=Math.max(8,(st.end-st.start)*zoom)+'px';
-    el.append(h('div','lb',(st.kind==='name'?'🏷 ':'❝ ')+st.text.split(NL)[0]));
+    if(im)el.style.backgroundImage=`url(/image/${st.mid})`;
+    el.append(h('div','lb',im?'🖼 '+(st.name||'이미지'):(st.kind==='name'?'🏷 ':'❝ ')+st.text.split(NL)[0]));
     el.append(h('div','hl'),h('div','hr'));ln.append(el);rows.append(r)});
   updHead();
 }
@@ -918,6 +928,13 @@ function renderSubs(){
   const burn=h('input');burn.type='checkbox';burn.checked=P.settings.burn;burn.onchange=()=>{P.settings.burn=burn.checked;save()};
   const bl=h('label');bl.append(burn,' 내보내기 시 영상에 자막 입히기');c.append(h('div'),bl);
   B.append(c);
+  const ic=card('SRT 자막 불러오기');
+  ic.append(h('div','hint','• 편집본 기준: 자른 뒤의 영상 시간에 맞춘 SRT (예: 원고로 만든 자막 초안, 이 편집기의 "타임라인 SRT")\n• 원본 기준: 선택한 원본 파일 시간에 맞춘 SRT (예: "SRT 저장 (원본 기준)" 파일)\n불러온 구간에 있던 자막은 바뀝니다. 실행취소(Ctrl+Z)로 되돌릴 수 있습니다.'));
+  ic.lastChild.style.whiteSpace='pre-line';
+  const ig=h('div','grp');
+  const bt=btn('📂 편집본 기준으로 불러오기',()=>{if(!LY.length)return toast('먼저 타임라인에 컷을 올려 주세요');srtTarget={mode:'tl'};$('#fileSrt').click()},'pri');
+  const bo=btn('📂 원본 기준 (선택 파일)',()=>{if(!m)return toast('미디어 탭에서 원본 파일을 선택하세요');srtTarget={mode:'src',mid:m.id};$('#fileSrt').click()});
+  ig.append(bt,bo);ic.append(ig);B.append(ic);
   if(!m){B.append(h('p','hint','미디어 탭에서 파일을 선택하세요.'));return}
   const subs=P.subs[m.id];
   const c2=card('선택: '+m.name);
@@ -939,6 +956,43 @@ function renderSubs(){
       c2.append(r)})
   }
   B.append(c2)
+}
+/* ---- SRT / VTT import ---- */
+let srtTarget=null;
+function parseSrt(txt){
+  const tm=v=>{const p=v.trim().replace(',','.').split(':').map(Number);return p.some(isNaN)?NaN:p.reduce((a,b)=>a*60+b,0)};
+  const out=[];
+  for(const blk of txt.replace(/^\uFEFF/,'').replace(/\r/g,'').split(/\n[ \t]*\n/)){
+    const ls=blk.split('\n');const i=ls.findIndex(l=>l.includes('-->'));if(i<0)continue;
+    const mt=ls[i].match(/([\d:.,]+)\s*-->\s*([\d:.,]+)/);if(!mt)continue;
+    const a=tm(mt[1]),b=tm(mt[2]);
+    const t=ls.slice(i+1).map(l=>l.replace(/<[^>]+>/g,'').trim()).filter(Boolean).join(' ');
+    if(isNaN(a)||isNaN(b)||b<=a||!t)continue;
+    out.push({s:r2(a),e:r2(b),t})}
+  return out.sort((x,y)=>x.s-y.s)
+}
+async function importSrt(f,tg){
+  let list;try{list=parseSrt(await f.text())}catch(e){list=[]}
+  if(!list.length)return toast('자막을 읽지 못했습니다 (SRT/VTT 형식인지 확인하세요)');
+  if(tg.mode==='src'){
+    const m=media(tg.mid);if(!m)return;
+    if(subJobs[m.id])return toast('이 파일의 자막을 생성하는 중입니다. 끝난 뒤 불러오세요');
+    if(P.subs[m.id]&&P.subs[m.id].length&&!confirm(`'${m.name}'의 기존 자막 ${P.subs[m.id].length}줄을 불러온 자막으로 바꿀까요?`))return;
+    edit(()=>{P.subs[m.id]=list},null,{struct:1,tabs:1});
+    return toast(`자막 ${list.length}줄을 불러왔습니다 (원본 기준) · ${m.name}`)}
+  // timeline (edited-video) time -> each clip's source time
+  if(LY.some(o=>subJobs[o.c.mid]))return toast('자막을 생성하는 중인 컷이 있습니다. 끝난 뒤 불러오세요');
+  const had=LY.some(o=>(P.subs[o.c.mid]||[]).some(x=>x.e>o.c.in&&x.s<o.c.out));
+  if(had&&!confirm('타임라인 구간에 있는 기존 자막을 불러온 자막으로 바꿀까요?'))return;
+  let used=0,drop=0;
+  edit(()=>{
+    for(const o of LY){const a=P.subs[o.c.mid];if(a)P.subs[o.c.mid]=a.filter(x=>x.e<=o.c.in||x.s>=o.c.out)}
+    for(const x of list){let hit=false;
+      for(const o of LY){const a=Math.max(x.s,o.start),b=Math.min(x.e,o.end);if(b-a<0.05)continue;hit=true;
+        (P.subs[o.c.mid]||(P.subs[o.c.mid]=[])).push({s:r2(o.c.in+(a-o.start)*o.c.speed),e:r2(o.c.in+(b-o.start)*o.c.speed),t:x.t})}
+      hit?used++:drop++}
+    for(const k in P.subs)P.subs[k].sort((p,q)=>p.s-q.s)},null,{struct:1,tabs:1});
+  toast(`자막 ${used}줄을 불러왔습니다 (편집본 기준)`+(drop?` · 영상 길이를 넘는 ${drop}줄은 제외`:''))
 }
 async function refreshSep(mid){
   try{const d=await(await fetch('/api/sep/'+mid)).json();sepInfo[mid]=d}catch(e){sepInfo[mid]={done:false}}
@@ -1029,6 +1083,8 @@ $('#bUndo').onclick=undo;$('#bRedo').onclick=redo;$('#bExport').onclick=openExpo
 $('#modal').onclick=e=>{if(e.target.id==='modal')$('#modal').style.display='none'};
 $('#bAdd').onclick=()=>$('#file').click();$('#drop').onclick=()=>$('#file').click();
 $('#file').onchange=e=>{uploadFiles(e.target.files);e.target.value=''};
+$('#fileImg').onchange=e=>{uploadImages([...e.target.files]);e.target.value=''};
+$('#fileSrt').onchange=e=>{const f=e.target.files[0];e.target.value='';if(f&&srtTarget)importSrt(f,srtTarget)};
 $('#bMusic').onclick=()=>$('#fileMusic').click();
 $('#fileMusic').onchange=e=>{
   const fs=[...e.target.files];e.target.value='';if(!fs.length)return;
@@ -1104,12 +1160,17 @@ function renderStk(){
   const g=h('div','grp');
   g.append(btn('🏷 이름표 추가 (왼쪽 아래)',()=>addSticker('name')),btn('❝ 말씀 제목 추가 (오른쪽 위)',()=>addSticker('verse')));
   c.append(g);B.append(c);
-  const l=card('추가한 스티커');
+  const ic=card('이미지 (Canva 썸네일 · 화면 자료)');
+  ic.append(h('div','hint','Canva에서 PNG/JPG로 내려받은 자료를 영상 위에 띄웁니다. 재생 막대 위치부터 8초씩 차례로 들어가고, 처음에는 화면 전체에 맞춰집니다. 이름표·자막은 이미지 위에 표시됩니다.'));
+  const ib=btn('🖼 이미지 넣기 (여러 장 가능)',()=>$('#fileImg').click(),'pri');ib.style.width='100%';ib.style.marginTop='8px';
+  ic.append(ib);B.append(ic);
+  const l=card('추가한 스티커 · 이미지');
   if(!P.stickers.length)l.append(h('div','hint','아직 없습니다.'));
   P.stickers.forEach(s=>{
     const r=h('div','mi'+(sel&&sel.id===s.id?' sel':''));
-    const th=h('div','th',s.kind==='name'?'🏷':'❝');
-    const nm=h('div','nm');const b=h('b',null,s.text.split(NL)[0]);nm.append(b,h('small',null,fmt(s.start)+' ~ '+fmt(s.end)));
+    const im=s.kind==='image';
+    const th=h('div','th',im?'':s.kind==='name'?'🏷':'❝');if(im)th.style.backgroundImage=`url(/image/${s.mid})`;
+    const nm=h('div','nm');const b=h('b',null,im?(s.name||'이미지'):s.text.split(NL)[0]);nm.append(b,h('small',null,fmt(s.start)+' ~ '+fmt(s.end)));
     const del=btn('🗑',e=>{e.stopPropagation();sel={type:'sticker',id:s.id};delSel()},'ib dng');
     r.append(th,nm,del);
     r.onclick=()=>{sel={type:'sticker',id:s.id};buildInspector();renderTimeline();renderStk();if(total()>0)seekTo(clamp(s.start+1.5,0,total()-0.01))};
@@ -1117,6 +1178,7 @@ function renderStk(){
   B.append(l);
 }
 function buildSticker(R,s){
+  if(s.kind==='image')return buildImage(R,s);
   const k=card('스티커 편집');
   const kg=h('div','grp');
   [['name','🏷 이름표'],['verse','❝ 말씀 카드']].forEach(([v,l])=>{const b=btn(l,()=>edit(()=>s.kind=v,null,{tabs:1}));reg(()=>b.classList.toggle('on',s.kind===v));kg.append(b)});
@@ -1146,6 +1208,56 @@ function buildSticker(R,s){
   k.append(frow('',btn('⧉ 복제',dupSel),btn('🗑 삭제',delSel,'dng')));
   R.append(k);
 }
+/* ---- image overlays (kind:'image', share the sticker track) ---- */
+const IMG_POS=[['cc','가운데 (전체 화면)'],['tl','왼쪽 위'],['tc','가운데 위'],['tr','오른쪽 위'],['cl','왼쪽 가운데'],['cr','오른쪽 가운데'],['bl','왼쪽 아래'],['bc','가운데 아래'],['br','오른쪽 아래']];
+// MUST match image_box() in server.py
+function imgBox(W,H,iw,ih,scale,pos){
+  const sc=clamp(+scale||1,0.05,1),k=Math.min(W*sc/iw,H*sc/ih);
+  const bw=Math.max(2,Math.floor(iw*k/2+0.5)*2),bh=Math.max(2,Math.floor(ih*k/2+0.5)*2);
+  const mx=Math.floor(W*0.04+0.5),my=Math.floor(H*0.05+0.5);
+  const x0=pos[1]==='l'?mx:pos[1]==='r'?W-bw-mx:(W-bw)/2,y0=pos[0]==='t'?my:pos[0]==='b'?H-bh-my:(H-bh)/2;
+  return{bw,bh,x0,y0}
+}
+function uploadImages(files){
+  return(async()=>{
+    let t0=total()>0?Math.min(T,Math.max(0,total()-1)):0;const added=[];
+    for(const f of files){
+      const task=addTask('이미지: '+f.name);
+      let d;try{const fd=new FormData();fd.append('file',f);d=await(await fetch('/api/image',{method:'POST',body:fd})).json()}catch(e){d={error:'업로드 실패'}}
+      task.done();
+      if(d.error){toast(f.name+': '+d.error);continue}
+      added.push({id:uid(),kind:'image',mid:d.id,name:d.name,iw:d.w,ih:d.h,start:r2(t0),end:r2(t0+8),pos:'cc',scale:1,anim:'fade',ad:0.5});
+      t0+=8}
+    if(!added.length)return;
+    edit(()=>{P.stickers.push(...added);sel={type:'sticker',id:added[0].id}},null,{struct:1,tabs:1});
+    setTab('stk');if(total()>0)seekTo(clamp(added[0].start+1,0,total()-0.01));
+    toast(`이미지 ${added.length}장을 넣었습니다. 오른쪽에서 시간·위치·크기를 조절하세요`)})()
+}
+function buildImage(R,s){
+  const k=card('이미지 편집');
+  const pv=h('div');pv.style.cssText=`height:90px;border-radius:6px;background:#000 url(/image/${s.mid}) center/contain no-repeat;margin-bottom:6px`;
+  k.append(pv,h('div','hint',(s.name||'')+` · ${s.iw}×${s.ih}`));
+  k.append(frow('나오는 시간',...timeField('',()=>s.start,v=>{s.start=r2(Math.max(0,v));if(s.end<s.start+0.5)s.end=r2(s.start+0.5)},'stks')));
+  k.append(frow('사라지는 시간',...timeField('',()=>s.end,v=>{s.end=r2(Math.max(s.start+0.5,v))},'stke')));
+  const tb=h('div','grp');
+  tb.append(btn('시작=재생 막대',()=>edit(()=>{s.start=r2(T);if(s.end<s.start+0.5)s.end=r2(s.start+0.5)},null)),btn('끝=재생 막대',()=>edit(()=>s.end=r2(Math.max(s.start+0.5,T)),null)));
+  k.append(frow('',tb));
+  const pg=h('div','grp');
+  pg.append(btn('⛶ 전체 화면',()=>edit(()=>{s.pos='cc';s.scale=1},null)),btn('↗ 오른쪽 위 작게',()=>edit(()=>{s.pos='tr';s.scale=0.3},null)));
+  k.append(frow('빠른 배치',pg));
+  const ps=h('select');IMG_POS.forEach(([v,l])=>{const o=h('option',null,l);o.value=v;ps.append(o)});
+  ps.onchange=()=>edit(()=>s.pos=ps.value,null);reg(()=>ps.value=s.pos);
+  k.append(frow('위치',ps));
+  k.append(slider('크기',()=>s.scale*100,v=>s.scale=r2(v)/100,{min:10,max:100,step:1,unit:'%'}));
+  k.append(h('div','hint','크기 100% = 화면 안에 꽉 맞춤 (비율 유지, 남는 부분은 영상이 보임)'));
+  const an=h('select');[['fade','페이드 인/아웃'],['slide','옆에서 밀려 들어오기 + 페이드'],['none','애니메이션 없음']].forEach(([v,l])=>{const o=h('option',null,l);o.value=v;an.append(o)});
+  an.onchange=()=>edit(()=>s.anim=an.value,null);reg(()=>an.value=s.anim);
+  k.append(frow('등장 효과',an));
+  const ad=h('input','num');ad.type='number';ad.step=.1;ad.min=.1;ad.max=2;ad.onchange=()=>edit(()=>s.ad=clamp(+ad.value||.5,.1,2),'stkad');reg(()=>{if(document.activeElement!==ad)ad.value=s.ad});
+  k.append(frow('효과 시간',ad,h('span','hint','초')));
+  k.append(frow('',btn('⧉ 복제',dupSel),btn('🗑 삭제',delSel,'dng')));
+  R.append(k);
+}
 const stkImgs={};
 function updStickers(){
   const layer=$('#stkLayer');if(!layer)return;
@@ -1154,18 +1266,21 @@ function updStickers(){
     live.add(s.id);
     let o=stkImgs[s.id];
     if(!o){o={img:new Image(),key:'',ok:false};o.img.onload=()=>{o.ok=true};layer.append(o.img);stkImgs[s.id]=o}
-    const key=[s.text,s.kind,s.color,s.scale,H].join('|');
-    if(o.key!==key){o.key=key;o.ok=false;o.img.src='/api/sticker.png?'+new URLSearchParams({t:s.text,k:s.kind,c:s.color,s:s.scale,H:H})}
-    const img=o.img,on=T>=s.start&&T<s.end;
+    const isIm=s.kind==='image';
+    const key=isIm?'img|'+s.mid:[s.text,s.kind,s.color,s.scale,H].join('|');
+    if(o.key!==key){o.key=key;o.ok=false;o.img.classList.toggle('im',isIm);o.img.src=isIm?'/image/'+s.mid:'/api/sticker.png?'+new URLSearchParams({t:s.text,k:s.kind,c:s.color,s:s.scale,H:H})}
+    const img=o.img,on=T>=s.start&&T<s.end&&T<total();
     if(!on||!o.ok||!img.naturalWidth){img.style.display='none';continue}
-    const iw=img.naturalWidth,ih=img.naturalHeight,mx=W*0.04,my=H*0.05;
-    const x0=s.pos[1]==='l'?mx:s.pos[1]==='r'?W-iw-mx:(W-iw)/2,y0=s.pos[0]==='t'?my:H-ih-my;
+    let iw,ih,x0,y0;
+    if(isIm){const b=imgBox(W,H,s.iw||img.naturalWidth,s.ih||img.naturalHeight,s.scale,s.pos);iw=b.bw;ih=b.bh;x0=b.x0;y0=b.y0}
+    else{iw=img.naturalWidth;ih=img.naturalHeight;const mx=W*0.04,my=H*0.05;
+      x0=s.pos[1]==='l'?mx:s.pos[1]==='r'?W-iw-mx:(W-iw)/2;y0=s.pos[0]==='t'?my:H-ih-my}
     const d=Math.max(0.1,Math.min(2,s.ad||.5,(s.end-s.start)/2));
     let a=1,off=0;
     if(s.anim!=='none')a=Math.min(1,(T-s.start)/d,(s.end-T)/d);
     if(s.anim==='slide'&&s.pos[1]!=='c'){const p=Math.max(0,1-(T-s.start)/d)+Math.max(0,(T-(s.end-d))/d);off=W*0.06*p*(s.pos[1]==='l'?-1:1)}
     img.style.display='block';img.style.opacity=Math.max(0,a);
-    img.style.left=((x0+off)/W*100)+'%';img.style.top=(y0/H*100)+'%';img.style.width=(iw/W*100)+'%';
+    img.style.left=((x0+off)/W*100)+'%';img.style.top=(y0/H*100)+'%';img.style.width=(iw/W*100)+'%';img.style.height=isIm?(ih/H*100)+'%':'';
   }
   for(const id in stkImgs)if(!live.has(id)){stkImgs[id].img.remove();delete stkImgs[id]}
 }

@@ -24,3 +24,15 @@
 - 내보내기: `-loop 1` 이미지 입력 + `fade alpha` + overlay `enable=between(t,s,e)`, 슬라이드는 x 수식. 위치 계산(`run_export`)과 `updStickers()`(index.html)는 동일해야 함.
 - 기본 세트: 이름표(왼쪽 아래)+말씀 제목(오른쪽 위), 14~25초.
 - 의존성 추가: pillow
+
+## 이미지 (P.stickers, kind:'image')
+- Canva PNG/JPG 등 정지 이미지. `/api/image`가 PNG로 정규화해 `data/media/<id>.png`+메타(kind:'image') 저장, `/image/<id>`로 제공. P.media에는 넣지 않음.
+- 스티커와 같은 트랙·드래그·복제·실행취소를 공유. 필드: mid, name, iw, ih, start, end, pos(cc/tl/tc/tr/cl/cr/bl/bc/br), scale(0.1~1, 1=화면 안에 꽉 맞춤), anim, ad.
+- 위치 계산 `image_box()`(server.py) = `imgBox()`(index.html). 한쪽을 바꾸면 다른 쪽도 수정. 이미지는 항상 텍스트 스티커·자막 아래(미리보기 z-index, 내보내기 overlay 순서).
+
+## SRT 불러오기 (자막 탭)
+- 편집본 기준: 타임라인 시간 → 각 컷의 원본 시간으로 나눠 `P.subs[mid]`에 저장(겹치는 기존 자막은 교체). 원본 기준: 선택 파일의 `P.subs[mid]`를 교체.
+- 여러 줄 자막은 한 줄로 합쳐짐(목록 입력칸이 한 줄이라서).
+
+## ffmpeg 버전
+- ffmpeg 8부터 `-filter_complex_script`가 없어짐 → `filter_script_args()`가 지원 여부를 확인해 `-/filter_complex`로 대체.
