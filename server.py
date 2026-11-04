@@ -1,4 +1,4 @@
-import sys, types, os, re, json, uuid, hashlib, subprocess, threading, time, shutil, wave
+import sys, types, os, re, json, uuid, hashlib, subprocess, threading, time, shutil, wave, math
 try:
     import av  # noqa  (PyAV can be blocked by Windows app-control policy; not needed)
 except Exception:
@@ -20,6 +20,16 @@ for d in (MEDIA, CACHE, EXPORTS, SUBS, os.path.join(CACHE, 'sep')):
     os.makedirs(d, exist_ok=True)
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 NOWIN = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+_FC_ARGS = []
+
+
+def filter_script_args(path):
+    """-filter_complex_script was removed in ffmpeg 8; newer builds read a file via '-/filter_complex'."""
+    if not _FC_ARGS:
+        r = subprocess.run([FFMPEG, '-hide_banner', '-h', 'full'], capture_output=True, text=True,
+                           encoding='utf-8', errors='replace', creationflags=NOWIN)
+        _FC_ARGS.append('-filter_complex_script' if 'filter_complex_script' in r.stdout else '-/filter_complex')
+    return [_FC_ARGS[0], path]
 
 app = Flask(__name__, static_folder=os.path.join(BASE, 'static'), static_url_path='/static')
 app.config['MAX_CONTENT_LENGTH'] = None
@@ -179,6 +189,55 @@ def upload():
              '-vf', 'scale=-2:96', os.path.join(CACHE, mid + '.jpg')])
     save_meta(m)
     return jsonify(m)
+
+
+@app.route('/api/image', methods=['POST'])
+def upload_image():
+    """Still image (e.g. Canva PNG/JPG export) for the image overlay track. Normalised to PNG."""
+    from PIL import Image, ImageOps
+    f = request.files.get('file')
+    if not f:
+        return jsonify(error='파일 없음'), 400
+    try:
+        im = Image.open(f.stream)
+        im = ImageOps.exif_transpose(im)
+        im.load()
+    except Exception:
+        return jsonify(error='이미지를 열 수 없습니다 (PNG/JPG/WEBP)'), 400
+    im = im.convert('RGBA') if im.mode not in ('RGB', 'RGBA') else im
+    if max(im.size) > 3840:
+        im.thumbnail((3840, 3840), Image.LANCZOS)
+    mid = uuid.uuid4().hex[:12]
+    im.save(os.path.join(MEDIA, mid + '.png'), 'PNG')
+    m = dict(id=mid, name=f.filename, ext='.png', kind='image', w=im.width, h=im.height,
+             hasVideo=False, hasAudio=False, duration=0.0)
+    save_meta(m)
+    return jsonify(m)
+
+
+@app.route('/image/<mid>')
+def image_file(mid):
+    m = load_meta(mid)
+    if m.get('kind') != 'image':
+        abort(404)
+    r = send_file(media_file(m), mimetype='image/png')
+    r.headers['Cache-Control'] = 'max-age=86400'
+    return r
+
+
+def _rnd(v):
+    return int(math.floor(v + 0.5))
+
+
+def image_box(W, H, iw, ih, scale, pos):
+    """Image overlay geometry. MUST match imgBox() in static/index.html."""
+    s = max(0.05, min(1.0, float(scale)))
+    k = min(W * s / iw, H * s / ih)
+    bw, bh = max(2, _rnd(iw * k / 2) * 2), max(2, _rnd(ih * k / 2) * 2)
+    mx, my = _rnd(W * 0.04), _rnd(H * 0.05)
+    x0 = mx if pos[1] == 'l' else (W - bw - mx if pos[1] == 'r' else (W - bw) / 2)
+    y0 = my if pos[0] == 't' else (H - bh - my if pos[0] == 'b' else (H - bh) / 2)
+    return bw, bh, x0, y0
 
 
 @app.route('/media/<mid>')
@@ -643,24 +702,37 @@ def run_export(job, P, burn):
     else:
         fc.append("[ac1]alimiter=limit=0.95[aout]")
     vlabel = 'vc'
-    for j, st in enumerate(P.get('stickers') or []):
+    # image overlays go under text stickers (same order as the preview's z-index)
+    stk_all = list(enumerate(P.get('stickers') or []))
+    stk_all.sort(key=lambda x: 0 if x[1].get('kind') == 'image' else 1)
+    for j, st in stk_all:
         s0 = max(0.0, float(st['start']))
         e0 = min(total, float(st['end']))
         if e0 - s0 < 0.2:
             continue
-        lines = str(st.get('text', '')).split(chr(10))
-        png, iw, ih = stickers.render(lines, st.get('kind', 'name'), st.get('color', '#f59e0b'), H, float(st.get('scale', 1)))
-        pth = os.path.join(tmp, f'stk{j}.png')
-        with open(pth, 'wb') as f:
-            f.write(png)
-        k = add(pth, ['-loop', '1', '-framerate', '30', '-t', f'{total:.3f}'])
+        loop = ['-loop', '1', '-framerate', '30', '-t', f'{total:.3f}']
         anim = st.get('anim', 'slide')
         d = max(0.1, min(2.0, float(st.get('ad', 0.5)), (e0 - s0) / 2))
-        mx, my = round(W * 0.04), round(H * 0.05)
-        pos = st.get('pos', 'bl')
-        x0 = mx if pos[1] == 'l' else (W - iw - mx if pos[1] == 'r' else (W - iw) / 2)
-        y0 = my if pos[0] == 't' else H - ih - my
-        chain = f"[{k}:v]format=rgba"
+        if st.get('kind') == 'image':
+            im = load_meta(st.get('mid', ''))
+            if im.get('kind') != 'image':
+                continue
+            pos = st.get('pos', 'cc')
+            iw, ih, x0, y0 = image_box(W, H, im['w'], im['h'], st.get('scale', 1), pos)
+            k = add(media_file(im), loop)
+            chain = f"[{k}:v]scale={iw}:{ih}:flags=lanczos,setsar=1,format=rgba"
+        else:
+            lines = str(st.get('text', '')).split(chr(10))
+            png, iw, ih = stickers.render(lines, st.get('kind', 'name'), st.get('color', '#f59e0b'), H, float(st.get('scale', 1)))
+            pth = os.path.join(tmp, f'stk{j}.png')
+            with open(pth, 'wb') as f:
+                f.write(png)
+            k = add(pth, loop)
+            mx, my = round(W * 0.04), round(H * 0.05)
+            pos = st.get('pos', 'bl')
+            x0 = mx if pos[1] == 'l' else (W - iw - mx if pos[1] == 'r' else (W - iw) / 2)
+            y0 = my if pos[0] == 't' else H - ih - my
+            chain = f"[{k}:v]format=rgba"
         if anim != 'none':
             chain += f",fade=t=in:st={s0:.3f}:d={d:.3f}:alpha=1,fade=t=out:st={e0 - d:.3f}:d={d:.3f}:alpha=1"
         fc.append(chain + f"[stk{j}]")
@@ -690,7 +762,7 @@ def run_export(job, P, burn):
     name = f"export_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
     outp = os.path.join(EXPORTS, name)
     cmd = [FFMPEG, '-y', '-v', 'error', '-nostats', '-progress', 'pipe:1'] + inputs + [
-        '-filter_complex_script', 'graph.txt', '-map', f'[{vlabel}]', '-map', '[aout]',
+        *filter_script_args('graph.txt'), '-map', f'[{vlabel}]', '-map', '[aout]',
         '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
         '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', '-t', f'{total:.3f}', outp]
     # inputs hold absolute paths; run from tmp dir so graph/sub paths are short & colon free
